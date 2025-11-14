@@ -1,93 +1,33 @@
 #!/usr/bin/env python3
 """Lightweight GUI wrapper for the multi-channel NBFM transmitter."""
 
-import csv
 import threading
 import tkinter as tk
-from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from multich_nbfm_tx import MultiNBFMTx
-
-
-@dataclass(frozen=True)
-class ChannelPreset:
-    """Represents a selectable preset channel."""
-
-    key: str
-    label: str
-    frequency_hz: float
-
-
-def load_channel_presets() -> List[ChannelPreset]:
-    """Load channel presets from the packaged CSV file."""
-
-    presets_path = Path(__file__).with_name("channel_presets.csv")
-    if not presets_path.exists():
-        raise FileNotFoundError(
-            f"Missing preset file: {presets_path}. Ensure it is packaged with the GUI."
-        )
-
-    presets: List[ChannelPreset] = []
-    with presets_path.open(newline="", encoding="utf-8") as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            try:
-                label = row.get("display_name") or row.get("channel_id")
-                frequency = float(row["frequency_hz"]) if row.get("frequency_hz") else None
-            except (KeyError, ValueError) as exc:
-                raise ValueError(
-                    f"Invalid row in {presets_path}: {row!r}"  # pragma: no cover - configuration issue
-                ) from exc
-
-            if label is None or frequency is None:
-                raise ValueError(
-                    f"Incomplete preset definition in {presets_path}: {row!r}"  # pragma: no cover - configuration issue
-                )
-
-            key = row.get("channel_id", label)
-            presets.append(ChannelPreset(key=str(key), label=str(label), frequency_hz=frequency))
-
-    if not presets:
-        raise ValueError(
-            f"No channel presets were loaded from {presets_path}"  # pragma: no cover - configuration issue
-        )
-
-    return presets
 
 
 class ChannelRow(ttk.Frame):
     """Widget that captures per-channel configuration."""
 
-    def __init__(self, master, presets: List[ChannelPreset], remove_callback):
+    def __init__(self, master, remove_callback):
         super().__init__(master)
         self.remove_callback = remove_callback
-        self.preset_var = tk.StringVar()
+        self.freq_var = tk.StringVar()
         self.gain_var = tk.StringVar(value="1.0")
         self.files: List[Path] = []
-        self._labels = [preset.label for preset in presets]
-        self._preset_map: Dict[str, ChannelPreset] = {
-            preset.label: preset for preset in presets
-        }
 
         self.header = ttk.Label(self, text="Channel")
         self.header.grid(row=0, column=0, padx=4, pady=2, sticky="w")
 
-        ttk.Label(self, text="FRS/GMRS Channel:").grid(
+        ttk.Label(self, text="Frequency (Hz):").grid(
             row=1, column=0, padx=4, pady=2, sticky="w"
         )
-        self.channel_combo = ttk.Combobox(
-            self,
-            textvariable=self.preset_var,
-            values=self._labels,
-            state="readonly",
-            width=35,
-        )
-        self.channel_combo.grid(row=1, column=1, padx=4, pady=2, sticky="we")
-        if self._labels:
-            self.preset_var.set(self._labels[0])
+        self.freq_entry = ttk.Entry(self, textvariable=self.freq_var, width=20)
+        self.freq_entry.grid(row=1, column=1, padx=4, pady=2, sticky="we")
 
         ttk.Label(self, text="Gain (linear):").grid(
             row=2, column=0, padx=4, pady=2, sticky="w"
@@ -108,15 +48,6 @@ class ChannelRow(ttk.Frame):
 
     def set_index(self, index: int) -> None:
         self.header.config(text=f"Channel {index}")
-
-    def get_frequency(self) -> float:
-        label = self.preset_var.get().strip()
-        if not label:
-            raise ValueError("Each channel requires a preset selection")
-        preset = self._preset_map.get(label)
-        if preset is None:
-            raise ValueError(f"Unknown preset selected: {label}")
-        return preset.frequency_hz
 
     def select_files(self) -> None:
         filenames = filedialog.askopenfilenames(
@@ -141,30 +72,20 @@ class ChannelRow(ttk.Frame):
 
 
 class MultiChannelApp(tk.Tk):
-    TX_SAMPLE_RATE = 8_000_000
-    MOD_SAMPLE_RATE = 250_000
-    DEVIATION_HZ = 3_000
-    MASTER_SCALE = 0.8
-    TX_GAIN_DEFAULTS = {
-        "hackrf": 0.0,
-        "pluto": -10.0,
-        "plutoplus": -10.0,
-        "plutoplussdr": -10.0,
-    }
-
     def __init__(self):
         super().__init__()
 
         self.title("Multi-channel NBFM TX")
         self.resizable(True, True)
 
-        try:
-            self.presets = load_channel_presets()
-        except Exception as exc:  # pragma: no cover - UI feedback
-            messagebox.showerror("Preset load failure", str(exc))
-            raise
-
         self.device_var = tk.StringVar(value="hackrf")
+        self.center_freq_var = tk.StringVar(value="462600000")
+        self.tx_sr_var = tk.StringVar(value="8000000")
+        self.tx_gain_var = tk.StringVar(value="0")
+        self.deviation_var = tk.StringVar(value="3000")
+        self.mod_sr_var = tk.StringVar(value="250000")
+        self.audio_sr_var = tk.StringVar()
+        self.master_scale_var = tk.StringVar(value="0.8")
         self.loop_var = tk.BooleanVar(value=True)
 
         self.channel_rows: List[ChannelRow] = []
@@ -191,38 +112,70 @@ class MultiChannelApp(tk.Tk):
         )
         device_combo.grid(row=0, column=1, sticky="we", **padding)
 
+        ttk.Label(main, text="Center Frequency (Hz):").grid(
+            row=1, column=0, sticky="w", **padding
+        )
+        ttk.Entry(main, textvariable=self.center_freq_var).grid(
+            row=1, column=1, sticky="we", **padding
+        )
+
+        ttk.Label(main, text="TX Sample Rate (sps):").grid(
+            row=2, column=0, sticky="w", **padding
+        )
+        ttk.Entry(main, textvariable=self.tx_sr_var).grid(
+            row=2, column=1, sticky="we", **padding
+        )
+
+        ttk.Label(main, text="TX Gain:").grid(row=3, column=0, sticky="w", **padding)
+        ttk.Entry(main, textvariable=self.tx_gain_var).grid(
+            row=3, column=1, sticky="we", **padding
+        )
+
+        ttk.Label(main, text="Deviation (Hz):").grid(row=4, column=0, sticky="w", **padding)
+        ttk.Entry(main, textvariable=self.deviation_var).grid(
+            row=4, column=1, sticky="we", **padding
+        )
+
+        ttk.Label(main, text="Mod Sample Rate (sps):").grid(
+            row=5, column=0, sticky="w", **padding
+        )
+        ttk.Entry(main, textvariable=self.mod_sr_var).grid(
+            row=5, column=1, sticky="we", **padding
+        )
+
+        ttk.Label(main, text="Audio Sample Rate (Hz, optional):").grid(
+            row=6, column=0, sticky="w", **padding
+        )
+        ttk.Entry(main, textvariable=self.audio_sr_var).grid(
+            row=6, column=1, sticky="we", **padding
+        )
+
+        ttk.Label(main, text="Master Scale:").grid(row=7, column=0, sticky="w", **padding)
+        ttk.Entry(main, textvariable=self.master_scale_var).grid(
+            row=7, column=1, sticky="we", **padding
+        )
+
         ttk.Checkbutton(
             main,
             text="Loop queued audio",
             variable=self.loop_var,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", **padding)
+        ).grid(row=8, column=0, columnspan=2, sticky="w", **padding)
 
-        ttk.Label(
-            main,
-            text=(
-                f"TX Sample Rate: {self.TX_SAMPLE_RATE:,} sps\n"
-                f"Mod Sample Rate: {self.MOD_SAMPLE_RATE:,} sps\n"
-                f"Deviation: {self.DEVIATION_HZ:,} Hz\n"
-                f"Master Scale: {self.MASTER_SCALE:.2f}"
-            ),
-            justify="left",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", **padding)
-
-        ttk.Separator(main).grid(row=3, column=0, columnspan=3, sticky="we", pady=(10, 5))
+        ttk.Separator(main).grid(row=9, column=0, columnspan=3, sticky="we", pady=(10, 5))
 
         self.channels_container = ttk.Frame(main)
-        self.channels_container.grid(row=4, column=0, columnspan=3, sticky="nsew")
+        self.channels_container.grid(row=10, column=0, columnspan=3, sticky="nsew")
 
         add_btn = ttk.Button(main, text="Add Channel", command=self.add_channel)
-        add_btn.grid(row=5, column=0, sticky="w", **padding)
+        add_btn.grid(row=11, column=0, sticky="w", **padding)
 
         self.status_var = tk.StringVar(value="Idle")
         ttk.Label(main, textvariable=self.status_var).grid(
-            row=5, column=1, sticky="e", **padding
+            row=11, column=1, sticky="e", **padding
         )
 
         button_frame = ttk.Frame(main)
-        button_frame.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        button_frame.grid(row=12, column=0, columnspan=3, sticky="e", pady=(10, 0))
         self.start_button = ttk.Button(button_frame, text="Start", command=self.start_transmission)
         self.start_button.grid(row=0, column=0, padx=5)
         self.stop_button = ttk.Button(
@@ -231,10 +184,10 @@ class MultiChannelApp(tk.Tk):
         self.stop_button.grid(row=0, column=1, padx=5)
 
         main.columnconfigure(1, weight=1)
-        main.rowconfigure(4, weight=1)
+        main.rowconfigure(10, weight=1)
 
     def add_channel(self) -> None:
-        row = ChannelRow(self.channels_container, self.presets, self.remove_channel)
+        row = ChannelRow(self.channels_container, self.remove_channel)
         self.channel_rows.append(row)
         row.grid(row=len(self.channel_rows) - 1, column=0, sticky="we", pady=4)
         row.set_index(len(self.channel_rows))
@@ -252,11 +205,19 @@ class MultiChannelApp(tk.Tk):
 
     def _collect_channel_data(self):
         file_groups: List[List[Path]] = []
-        freqs: List[float] = []
+        offsets: List[float] = []
         gains: List[float] = []
 
+        center_str = self.center_freq_var.get().strip()
+        if not center_str:
+            raise ValueError("Center frequency is required")
+        center_freq = float(center_str)
+
         for idx, row in enumerate(self.channel_rows, start=1):
-            freq = row.get_frequency()
+            freq_str = row.freq_var.get().strip()
+            if not freq_str:
+                raise ValueError("Each channel requires a transmit frequency")
+            freq = float(freq_str)
             if not row.files:
                 raise ValueError("Each channel must have at least one audio file selected")
             gain_str = row.gain_var.get().strip()
@@ -265,31 +226,27 @@ class MultiChannelApp(tk.Tk):
             except ValueError as exc:
                 raise ValueError(f"Invalid gain for channel {idx}") from exc
             file_groups.append(row.files)
-            freqs.append(freq)
+            offsets.append(freq - center_freq)
             gains.append(gain)
 
-        min_freq = min(freqs)
-        max_freq = max(freqs)
-        center_freq = (min_freq + max_freq) / 2.0
-        frequency_offsets = [freq - center_freq for freq in freqs]
-
-        return center_freq, file_groups, frequency_offsets, gains
+        return center_freq, file_groups, offsets, gains
 
     def start_transmission(self) -> None:
         if self.running:
             return
         try:
             center_freq, file_groups, offsets, gains = self._collect_channel_data()
+            tx_sr = float(self.tx_sr_var.get())
+            tx_gain = float(self.tx_gain_var.get())
+            deviation = float(self.deviation_var.get())
+            mod_sr = float(self.mod_sr_var.get())
+            master_scale = float(self.master_scale_var.get())
+            audio_sr = (
+                float(self.audio_sr_var.get()) if self.audio_sr_var.get().strip() else None
+            )
         except ValueError as exc:
             messagebox.showerror("Invalid configuration", str(exc))
             return
-
-        tx_sr = float(self.TX_SAMPLE_RATE)
-        mod_sr = float(self.MOD_SAMPLE_RATE)
-        deviation = float(self.DEVIATION_HZ)
-        master_scale = float(self.MASTER_SCALE)
-        audio_sr = None
-        tx_gain = self.TX_GAIN_DEFAULTS.get(self.device_var.get(), 0.0)
 
         self.tb = MultiNBFMTx(
             device=self.device_var.get(),
@@ -308,7 +265,7 @@ class MultiChannelApp(tk.Tk):
 
         self.running = True
         self._run_error = None
-        self.status_var.set(f"Transmitting @ {center_freq/1e6:.4f} MHz")
+        self.status_var.set("Transmitting…")
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
 
