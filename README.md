@@ -11,6 +11,14 @@ for HackRF, Pluto SDR, and PlutoPlus SDR devices.
   audio sample rates on the fly, exposes per-channel gain trims, looping
   control, and either baseband offsets or direct frequency entry (`--freqs`).
 * `multich_gui.py` – lightweight Tkinter GUI that wraps the transmitter so you
+  can configure devices, FRS/GMRS channel selections, per-channel playlists,
+  and gain levels without memorizing CLI arguments. All RF parameters are
+  baked into the GUI for a known-good launch configuration.
+
+The GUI reads `channel_presets.csv` (bundled in this repository) to populate
+its channel picker. Edit that CSV to add, rename, or reorder channels for your
+site. Each preset must provide a `frequency_hz` column, and the `display_name`
+is shown in the dropdown list.
   can configure devices, frequencies, per-channel playlists, and gain levels
   without memorizing CLI arguments.
 
