@@ -2,6 +2,7 @@ import importlib
 import sys
 import types
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -72,6 +73,7 @@ _NUMPY_STUB.int16 = "int16"
 _NUMPY_STUB.ndarray = list
 _NUMPY_STUB.empty = lambda *args, **kwargs: []
 _NUMPY_STUB.frombuffer = lambda buffer, dtype=None: []
+_NUMPY_STUB.zeros = lambda *args, **kwargs: []
 _NUMPY_STUB.isscalar = lambda obj: isinstance(obj, (int, float, complex, bool))
 _NUMPY_STUB.bool_ = bool
 
@@ -151,6 +153,14 @@ def _import_module():
     return module
 
 
+def _import_squelch_script():
+    for name in ["ctcss_channel1_squelch", "multich_nbfm_tx"]:
+        sys.modules.pop(name, None)
+
+    _StubModules().install()
+    return importlib.import_module("ctcss_channel1_squelch")
+
+
 def test_ctcss_only_on_first_channel():
     multich = _import_module()
 
@@ -199,3 +209,12 @@ def test_ctcss_level_configurable():
     ctcss_source = tx.channels[0].ctcss_src
     assert isinstance(ctcss_source, _DummySigSource)
     assert ctcss_source.amplitude == pytest.approx(0.48)
+
+
+def test_squelch_script_default_tone():
+    squelch = _import_squelch_script()
+
+    with mock.patch.object(sys, "argv", ["ctcss", "--fc", "462600000"]):
+        args = squelch.parse_args()
+
+    assert args.ctcss_tone == pytest.approx(67.0)

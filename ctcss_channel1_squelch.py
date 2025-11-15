@@ -38,7 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--deviation", type=float, default=3e3, help="FM deviation (Hz)")
     parser.add_argument("--mod-sr", type=float, default=250e3, help="Modulation sample rate (Hz)")
     parser.add_argument("--duration", type=float, default=10.0, help="Seconds to transmit; <=0 keeps transmitting")
-    parser.add_argument("--ctcss-tone", type=float, default=100.0, help="CTCSS tone frequency in Hz")
+    parser.add_argument(
+        "--ctcss-tone",
+        type=float,
+        default=67.0,
+        help="CTCSS tone frequency in Hz (default 67.0 Hz for FRS/GMRS channel 1)",
+    )
     parser.add_argument(
         "--ctcss-level",
         type=float,
