@@ -53,11 +53,11 @@ class QueuedAudioSource(gr.sync_block):
         target_sample_rate: Optional[int] = None,
     ):
         if not wav_paths:
-            raise ValueError("At least one WAV file must be provided for playback")
+            raise ValueError("At least one audio file must be provided for playback")
 
         gr.sync_block.__init__(
             self,
-            name="QueuedWavSource",
+            name="QueuedAudioSource",
             in_sig=None,
             out_sig=[np.float32],
         )
@@ -106,7 +106,7 @@ class QueuedAudioSource(gr.sync_block):
         self._queue_index += 1
 
         if not path.exists():
-            raise FileNotFoundError(f"WAV file not found: {path}")
+            raise FileNotFoundError(f"Audio file not found: {path}")
 
         suffix = path.suffix.lower()
 
@@ -170,6 +170,13 @@ class QueuedAudioSource(gr.sync_block):
         self.sample_rate = target_sr
 
         return True
+
+    def _has_active_source(self) -> bool:
+        if self._reader_kind == "wav":
+            return self._current_wave is not None
+        if self._reader_kind == "mp3":
+            return self._current_reader is not None or bool(self._reader_buffer)
+        return False
 
     def _read_chunk(self) -> np.ndarray:
         if self._file_sample_rate is None:
@@ -242,13 +249,13 @@ class QueuedAudioSource(gr.sync_block):
         produced = 0
         while produced < noutput:
             if self._pending.size == 0:
-                if self._current_wave is None:
+                if not self._has_active_source():
                     if not self._prepare_next_file():
                         out[produced:noutput] = 0.0
                         return noutput
                 chunk = self._read_chunk()
                 if chunk.size == 0:
-                    if self._current_wave is None:
+                    if not self._has_active_source():
                         # File exhausted; move to next entry.
                         continue
                 else:

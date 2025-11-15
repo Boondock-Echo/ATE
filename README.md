@@ -19,8 +19,6 @@ The GUI reads `channel_presets.csv` (bundled in this repository) to populate
 its channel picker. Edit that CSV to add, rename, or reorder channels for your
 site. Each preset must provide a `frequency_hz` column, and the `display_name`
 is shown in the dropdown list.
-  can configure devices, frequencies, per-channel playlists, and gain levels
-  without memorizing CLI arguments.
 
 Both scripts require GNU Radio with `osmosdr` support and NumPy available in
 your Python environment. MP3 playlists are supported via the optional
