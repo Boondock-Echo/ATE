@@ -2,6 +2,7 @@ import importlib
 import sys
 import types
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -72,6 +73,7 @@ _NUMPY_STUB.int16 = "int16"
 _NUMPY_STUB.ndarray = list
 _NUMPY_STUB.empty = lambda *args, **kwargs: []
 _NUMPY_STUB.frombuffer = lambda buffer, dtype=None: []
+_NUMPY_STUB.zeros = lambda *args, **kwargs: []
 _NUMPY_STUB.isscalar = lambda obj: isinstance(obj, (int, float, complex, bool))
 _NUMPY_STUB.bool_ = bool
 
@@ -151,7 +153,15 @@ def _import_module():
     return module
 
 
-def test_ctcss_only_on_first_channel():
+def _import_squelch_script():
+    for name in ["ctcss_channel1_squelch", "multich_nbfm_tx"]:
+        sys.modules.pop(name, None)
+
+    _StubModules().install()
+    return importlib.import_module("ctcss_channel1_squelch")
+
+
+def test_ctcss_all_channels_supported():
     multich = _import_module()
 
     tx = multich.MultiNBFMTx(
@@ -159,29 +169,19 @@ def test_ctcss_only_on_first_channel():
         center_freq=462.6e6,
         file_groups=[[Path("ch1.wav")], [Path("ch2.wav")]],
         offsets=[-1250.0, 1250.0],
-        ctcss_tones=[67.0, None],
+        ctcss_tones=[67.0, 71.9],
         dcs_codes=[None, None],
     )
 
-    ctcss_source = tx.channels[0].ctcss_src
-    assert isinstance(ctcss_source, _DummySigSource)
-    assert ctcss_source.frequency == pytest.approx(67.0)
-    assert ctcss_source.amplitude == pytest.approx(0.35)
-    assert tx.channels[1].ctcss_src is None
+    first_ctcss = tx.channels[0].ctcss_src
+    second_ctcss = tx.channels[1].ctcss_src
 
-
-def test_ctcss_second_channel_rejected():
-    multich = _import_module()
-
-    with pytest.raises(ValueError):
-        multich.MultiNBFMTx(
-            device="hackrf",
-            center_freq=462.6e6,
-            file_groups=[[Path("ch1.wav")], [Path("ch2.wav")]],
-            offsets=[-1250.0, 1250.0],
-            ctcss_tones=[67.0, 71.9],
-            dcs_codes=[None, None],
-        )
+    assert isinstance(first_ctcss, _DummySigSource)
+    assert isinstance(second_ctcss, _DummySigSource)
+    assert first_ctcss.frequency == pytest.approx(67.0)
+    assert second_ctcss.frequency == pytest.approx(71.9)
+    assert first_ctcss.amplitude == pytest.approx(0.35)
+    assert second_ctcss.amplitude == pytest.approx(0.35)
 
 
 def test_ctcss_level_configurable():
@@ -199,3 +199,28 @@ def test_ctcss_level_configurable():
     ctcss_source = tx.channels[0].ctcss_src
     assert isinstance(ctcss_source, _DummySigSource)
     assert ctcss_source.amplitude == pytest.approx(0.48)
+
+
+def test_dcs_all_channels_supported():
+    multich = _import_module()
+
+    tx = multich.MultiNBFMTx(
+        device="hackrf",
+        center_freq=462.6e6,
+        file_groups=[[Path("ch1.wav")], [Path("ch2.wav")]],
+        offsets=[-1250.0, 1250.0],
+        ctcss_tones=[None, None],
+        dcs_codes=["023N", "205I"],
+    )
+
+    assert tx.channels[0].dcs_src is not None
+    assert tx.channels[1].dcs_src is not None
+
+
+def test_squelch_script_default_tone():
+    squelch = _import_squelch_script()
+
+    with mock.patch.object(sys, "argv", ["ctcss", "--fc", "462600000"]):
+        args = squelch.parse_args()
+
+    assert args.ctcss_tone == pytest.approx(67.0)
