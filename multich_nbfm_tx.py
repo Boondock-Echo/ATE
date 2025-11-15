@@ -450,9 +450,9 @@ class NBFMChannel(gr.hier_block2):
         # Gain on audio (if you need per-channel loudness trim)
         self.program_gain = blocks.multiply_const_ff(audio_gain)
 
-        # (Optional) simple audio band-limit (speech). Apply this before adding
-        # sub-audible tones so we do not attenuate the CTCSS/DCS waveforms.
-        # Keep ~300–3000 Hz; gentle filter to reduce wideband noise.
+        # (Optional) simple audio band-limit (speech). Keep ~300–3000 Hz with a
+        # gentle filter to reduce wideband noise while still passing the
+        # sub-audible tone generators without noticeable attenuation.
         self.a_lpf = filter.fir_filter_fff(
             1, firdes.low_pass(1.0, audio_sr, 3400, 800, window.WIN_HAMMING)
         )
@@ -546,6 +546,7 @@ class NBFMChannel(gr.hier_block2):
         # --- Connections ---
         self.connect(
             mixed_audio,
+            self.a_lpf,
             self.a_resamp,
             self.fm,
             self.bb_lpf,
