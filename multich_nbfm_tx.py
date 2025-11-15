@@ -365,11 +365,14 @@ class DCSGenerator(gr.sync_block):
         except ValueError as exc:  # pragma: no cover - validated earlier
             raise ValueError(f"Invalid DCS code '{code}'; expected octal digits") from exc
 
-        # Data bits A–L (LSB first within each digit) followed by Golay parity.
-        digits = [(value >> shift) & 0x7 for shift in (0, 3, 6)]
+        # Data bits A–L (MSB first within each digit) followed by Golay parity.
+        # Expand the user facing octal string so the first digit (hundreds
+        # place) maps to bits A–C, the second to D–F, and the last to G–I.  The
+        # CDCSS standard enumerates bits within each digit from MSB→LSB.
+        digits = [int(ch, 8) for ch in code]
         data_bits: List[int] = []
         for digit in digits:
-            data_bits.extend([(digit >> bit) & 0x1 for bit in range(3)])
+            data_bits.extend([(digit >> bit) & 0x1 for bit in (2, 1, 0)])
 
         if len(data_bits) != 9:
             raise AssertionError("Unexpected DCS digit expansion")
@@ -470,14 +473,14 @@ class NBFMChannel(gr.hier_block2):
                 audio_sr,
                 analog.GR_SIN_WAVE,
                 float(ctcss_hz),
-                0.2,
+                0.25,
                 0.0,
             )
             mix_sources.append(self.ctcss_src)
 
         self.dcs_src = None
         if dcs_code is not None and str(dcs_code).strip():
-            self.dcs_src = DCSGenerator(str(dcs_code), audio_sr, amplitude=0.18)
+            self.dcs_src = DCSGenerator(str(dcs_code), audio_sr, amplitude=0.25)
             mix_sources.append(self.dcs_src)
 
         if len(mix_sources) == 1:
