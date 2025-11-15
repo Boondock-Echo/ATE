@@ -19,6 +19,8 @@ class ChannelPreset:
     key: str
     label: str
     frequency_hz: float
+    ctcss_hz: Optional[float] = None
+    dcs_code: Optional[str] = None
 
 
 def load_channel_presets() -> List[ChannelPreset]:
@@ -37,6 +39,11 @@ def load_channel_presets() -> List[ChannelPreset]:
             try:
                 label = row.get("display_name") or row.get("channel_id")
                 frequency = float(row["frequency_hz"]) if row.get("frequency_hz") else None
+                ctcss_val = (
+                    float(row["ctcss_hz"]) if row.get("ctcss_hz") else None
+                )
+                dcs_val_raw = row.get("dcs_code")
+                dcs_val = dcs_val_raw.strip() if dcs_val_raw and dcs_val_raw.strip() else None
             except (KeyError, ValueError) as exc:
                 raise ValueError(
                     f"Invalid row in {presets_path}: {row!r}"  # pragma: no cover - configuration issue
@@ -48,7 +55,15 @@ def load_channel_presets() -> List[ChannelPreset]:
                 )
 
             key = row.get("channel_id", label)
-            presets.append(ChannelPreset(key=str(key), label=str(label), frequency_hz=frequency))
+            presets.append(
+                ChannelPreset(
+                    key=str(key),
+                    label=str(label),
+                    frequency_hz=frequency,
+                    ctcss_hz=ctcss_val,
+                    dcs_code=dcs_val,
+                )
+            )
 
     if not presets:
         raise ValueError(
@@ -95,14 +110,48 @@ class ChannelRow(ttk.Frame):
         self.gain_entry = ttk.Entry(self, textvariable=self.gain_var, width=10)
         self.gain_entry.grid(row=2, column=1, padx=4, pady=2, sticky="we")
 
+        self.ctcss_var = tk.BooleanVar(value=False)
+        self.dcs_var = tk.BooleanVar(value=False)
+        self._ctcss_value: Optional[float] = None
+        self._dcs_value: Optional[str] = None
+
+        ttk.Label(self, text="CTCSS Tone:").grid(
+            row=3, column=0, padx=4, pady=2, sticky="w"
+        )
+        self.ctcss_check = ttk.Checkbutton(
+            self,
+            text="Enable",
+            variable=self.ctcss_var,
+            command=self._on_ctcss_toggle,
+        )
+        self.ctcss_check.grid(row=3, column=1, padx=4, pady=2, sticky="w")
+        self.ctcss_info = ttk.Label(self, text="Not available")
+        self.ctcss_info.grid(row=3, column=2, padx=4, pady=2, sticky="w")
+
+        ttk.Label(self, text="DCS Code:").grid(
+            row=4, column=0, padx=4, pady=2, sticky="w"
+        )
+        self.dcs_check = ttk.Checkbutton(
+            self,
+            text="Enable",
+            variable=self.dcs_var,
+            command=self._on_dcs_toggle,
+        )
+        self.dcs_check.grid(row=4, column=1, padx=4, pady=2, sticky="w")
+        self.dcs_info = ttk.Label(self, text="Not available")
+        self.dcs_info.grid(row=4, column=2, padx=4, pady=2, sticky="w")
+
         self.files_label = ttk.Label(self, text="No files selected", width=40)
-        self.files_label.grid(row=3, column=0, columnspan=2, padx=4, pady=2, sticky="we")
+        self.files_label.grid(row=5, column=0, columnspan=2, padx=4, pady=2, sticky="we")
 
         select_btn = ttk.Button(self, text="Choose Files", command=self.select_files)
         select_btn.grid(row=1, column=2, padx=4, pady=2)
 
         remove_btn = ttk.Button(self, text="Remove", command=self.remove)
-        remove_btn.grid(row=3, column=2, padx=4, pady=2)
+        remove_btn.grid(row=5, column=2, padx=4, pady=2)
+
+        self.channel_combo.bind("<<ComboboxSelected>>", self._on_preset_changed)
+        self._update_tone_controls()
 
         self.columnconfigure(1, weight=1)
 
@@ -117,6 +166,16 @@ class ChannelRow(ttk.Frame):
         if preset is None:
             raise ValueError(f"Unknown preset selected: {label}")
         return preset.frequency_hz
+
+    def get_ctcss_tone(self) -> Optional[float]:
+        if self.ctcss_var.get() and self._ctcss_value is not None:
+            return float(self._ctcss_value)
+        return None
+
+    def get_dcs_code(self) -> Optional[str]:
+        if self.dcs_var.get() and self._dcs_value:
+            return str(self._dcs_value)
+        return None
 
     def select_files(self) -> None:
         filenames = filedialog.askopenfilenames(
@@ -138,6 +197,58 @@ class ChannelRow(ttk.Frame):
 
     def remove(self) -> None:
         self.remove_callback(self)
+
+    def _on_preset_changed(self, _event=None) -> None:
+        self._update_tone_controls()
+
+    def _update_tone_controls(self) -> None:
+        label = self.preset_var.get().strip()
+        preset = self._preset_map.get(label)
+        self._ctcss_value = preset.ctcss_hz if preset else None
+        self._dcs_value = preset.dcs_code if preset else None
+
+        if self._ctcss_value is not None:
+            self.ctcss_check.state(["!disabled"])
+        else:
+            self.ctcss_var.set(False)
+            self.ctcss_check.state(["disabled"])
+
+        if self._dcs_value is not None:
+            self.dcs_check.state(["!disabled"])
+        else:
+            self.dcs_var.set(False)
+            self.dcs_check.state(["disabled"])
+
+        self._refresh_tone_status()
+
+    def _refresh_tone_status(self) -> None:
+        if self._ctcss_value is not None:
+            status = "Enabled" if self.ctcss_var.get() else "Available"
+            self.ctcss_info.config(text=f"{self._ctcss_value:.1f} Hz ({status})")
+        else:
+            self.ctcss_info.config(text="Not available")
+
+        if self._dcs_value is not None:
+            status = "Enabled" if self.dcs_var.get() else "Available"
+            self.dcs_info.config(text=f"Code {self._dcs_value} ({status})")
+        else:
+            self.dcs_info.config(text="Not available")
+
+    def _on_ctcss_toggle(self) -> None:
+        if self._ctcss_value is None:
+            self.ctcss_var.set(False)
+            return
+        if self.ctcss_var.get() and self.dcs_var.get():
+            self.dcs_var.set(False)
+        self._refresh_tone_status()
+
+    def _on_dcs_toggle(self) -> None:
+        if self._dcs_value is None:
+            self.dcs_var.set(False)
+            return
+        if self.dcs_var.get() and self.ctcss_var.get():
+            self.ctcss_var.set(False)
+        self._refresh_tone_status()
 
 
 class MultiChannelApp(tk.Tk):
@@ -254,6 +365,8 @@ class MultiChannelApp(tk.Tk):
         file_groups: List[List[Path]] = []
         freqs: List[float] = []
         gains: List[float] = []
+        ctcss_tones: List[Optional[float]] = []
+        dcs_codes: List[Optional[str]] = []
 
         for idx, row in enumerate(self.channel_rows, start=1):
             freq = row.get_frequency()
@@ -267,19 +380,32 @@ class MultiChannelApp(tk.Tk):
             file_groups.append(row.files)
             freqs.append(freq)
             gains.append(gain)
+            ctcss_tones.append(row.get_ctcss_tone())
+            dcs_codes.append(row.get_dcs_code())
+            if ctcss_tones[-1] is not None and dcs_codes[-1] is not None:
+                raise ValueError(
+                    f"Channel {idx} cannot enable both CTCSS and DCS simultaneously"
+                )
 
         min_freq = min(freqs)
         max_freq = max(freqs)
         center_freq = (min_freq + max_freq) / 2.0
         frequency_offsets = [freq - center_freq for freq in freqs]
 
-        return center_freq, file_groups, frequency_offsets, gains
+        return center_freq, file_groups, frequency_offsets, gains, ctcss_tones, dcs_codes
 
     def start_transmission(self) -> None:
         if self.running:
             return
         try:
-            center_freq, file_groups, offsets, gains = self._collect_channel_data()
+            (
+                center_freq,
+                file_groups,
+                offsets,
+                gains,
+                ctcss_tones,
+                dcs_codes,
+            ) = self._collect_channel_data()
         except ValueError as exc:
             messagebox.showerror("Invalid configuration", str(exc))
             return
@@ -304,6 +430,8 @@ class MultiChannelApp(tk.Tk):
             master_scale=master_scale,
             loop_queue=self.loop_var.get(),
             channel_gains=gains,
+            ctcss_tones=ctcss_tones,
+            dcs_codes=dcs_codes,
         )
 
         self.running = True

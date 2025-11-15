@@ -276,6 +276,72 @@ class QueuedAudioSource(gr.sync_block):
 
         return noutput
 
+
+class DCSGenerator(gr.sync_block):
+    """Generate a repeating pseudo-DCS squelch waveform."""
+
+    _BIT_RATE = 134.4
+    _MARK_FREQ = 134.4
+    _SPACE_FREQ = 104.6
+
+    def __init__(
+        self,
+        code: str,
+        sample_rate: int,
+        amplitude: float = 0.2,
+    ):
+        code = (code or "").strip()
+        if not code:
+            raise ValueError("A DCS code string is required when enabling DCS")
+        if sample_rate <= 0:
+            raise ValueError("Sample rate must be positive for DCS generation")
+
+        gr.sync_block.__init__(
+            self,
+            name="DCSGenerator",
+            in_sig=None,
+            out_sig=[np.float32],
+        )
+
+        try:
+            value = int(code, 8)
+        except ValueError as exc:
+            raise ValueError(f"Invalid DCS code '{code}'; expected octal digits") from exc
+
+        bits = [int(b) for b in format(value, "09b")]
+        complement_source: List[int] = []
+        while len(complement_source) < 14:
+            complement_source.extend(bits)
+        complement_source = complement_source[:14]
+        pattern = bits + [1 - b for b in complement_source]
+        if not pattern:
+            raise ValueError("Unable to derive DCS pattern from the provided code")
+
+        self._pattern = pattern
+        self._sample_rate = float(sample_rate)
+        self._amplitude = float(amplitude)
+        self._samples_per_bit = self._sample_rate / self._BIT_RATE
+        self._bit_index = 0
+        self._bit_sample_acc = 0.0
+        self._phase = 0.0
+
+    def work(self, input_items, output_items):  # pragma: no cover - realtime stream
+        out = output_items[0]
+        for idx in range(len(out)):
+            bit = self._pattern[self._bit_index]
+            freq = self._MARK_FREQ if bit else self._SPACE_FREQ
+            phase_step = 2.0 * math.pi * freq / self._sample_rate
+            out[idx] = self._amplitude * math.sin(self._phase)
+            self._phase += phase_step
+            if self._phase >= 2.0 * math.pi:
+                self._phase -= 2.0 * math.pi
+            self._bit_sample_acc += 1.0
+            if self._bit_sample_acc >= self._samples_per_bit:
+                self._bit_sample_acc -= self._samples_per_bit
+                self._bit_index = (self._bit_index + 1) % len(self._pattern)
+        return len(out)
+
+
 class NBFMChannel(gr.hier_block2):
     """One audio -> NBFM mod -> freq-shifted complex stream at TX sample rate."""
 
@@ -289,6 +355,8 @@ class NBFMChannel(gr.hier_block2):
         audio_gain: float = 1.0,
         loop_queue: bool = True,
         expected_audio_sr: Optional[float] = None,
+        ctcss_hz: Optional[float] = None,
+        dcs_code: Optional[str] = None,
     ):
         gr.hier_block2.__init__(
             self, "NBFMChannel",
@@ -306,13 +374,48 @@ class NBFMChannel(gr.hier_block2):
             raise ValueError("Failed to determine audio sample rate from the playlist")
         audio_sr = int(self.src.sample_rate)
         # Gain on audio (if you need per-channel loudness trim)
-        self.a_gain = blocks.multiply_const_ff(audio_gain)
+        self.program_gain = blocks.multiply_const_ff(audio_gain)
 
         # (Optional) simple audio band-limit (speech)
         # Keep ~300–3000 Hz; gentle filter to reduce wideband noise
         self.a_lpf = filter.fir_filter_fff(
             1, firdes.low_pass(1.0, audio_sr, 3400, 800, window.WIN_HAMMING)
         )
+
+        self.connect(self.src, self.program_gain)
+
+        mix_sources: List[gr.basic_block] = [self.program_gain]
+        self._mix_adders: List[blocks.add_ff] = []
+
+        self.ctcss_src = None
+        if ctcss_hz is not None:
+            if ctcss_hz <= 0:
+                raise ValueError("CTCSS frequency must be positive when enabled")
+            self.ctcss_src = analog.sig_source_f(
+                audio_sr,
+                analog.GR_SIN_WAVE,
+                float(ctcss_hz),
+                0.2,
+                0.0,
+            )
+            mix_sources.append(self.ctcss_src)
+
+        self.dcs_src = None
+        if dcs_code is not None and str(dcs_code).strip():
+            self.dcs_src = DCSGenerator(str(dcs_code), audio_sr, amplitude=0.18)
+            mix_sources.append(self.dcs_src)
+
+        if len(mix_sources) == 1:
+            mixed_audio = mix_sources[0]
+        else:
+            current = mix_sources[0]
+            for tone_src in mix_sources[1:]:
+                adder = blocks.add_ff()
+                self._mix_adders.append(adder)
+                self.connect(current, (adder, 0))
+                self.connect(tone_src, (adder, 1))
+                current = adder
+            mixed_audio = current
 
         # Frequency modulator sensitivity:
         # sensitivity [rad/sample] = 2*pi*deviation / mod_sr
@@ -366,7 +469,7 @@ class NBFMChannel(gr.hier_block2):
         )
 
         # --- Connections ---
-        self.connect(self.src, self.a_gain, self.a_lpf, self.a_resamp, self.fm,
+        self.connect(mixed_audio, self.a_lpf, self.a_resamp, self.fm,
                      self.bb_lpf, self.rot, self.c_resamp, self)
 
 class MultiNBFMTx(gr.top_block):
@@ -384,6 +487,8 @@ class MultiNBFMTx(gr.top_block):
         master_scale: float = 0.8,
         loop_queue: bool = True,
         channel_gains: Optional[Sequence[float]] = None,
+        ctcss_tones: Optional[Sequence[Optional[float]]] = None,
+        dcs_codes: Optional[Sequence[Optional[str]]] = None,
     ):
         gr.top_block.__init__(self, "MultiNBFM TX")
 
@@ -394,6 +499,21 @@ class MultiNBFMTx(gr.top_block):
             raise ValueError("--channel-gains must include one value per channel")
         gains_list = list(channel_gains) if channel_gains is not None else None
 
+        num_channels = len(file_groups)
+        if ctcss_tones is None:
+            ctcss_list: List[Optional[float]] = [None] * num_channels
+        else:
+            if len(ctcss_tones) != num_channels:
+                raise ValueError("--ctcss-tones must include one value per channel")
+            ctcss_list = [float(t) if t is not None else None for t in ctcss_tones]
+
+        if dcs_codes is None:
+            dcs_list: List[Optional[str]] = [None] * num_channels
+        else:
+            if len(dcs_codes) != num_channels:
+                raise ValueError("--dcs-codes must include one value per channel")
+            dcs_list = [str(code).strip() or None if code is not None else None for code in dcs_codes]
+
         self.tx_sr = tx_sr
 
         # Per-channel builders
@@ -401,6 +521,12 @@ class MultiNBFMTx(gr.top_block):
         self._adders: List[blocks.add_cc] = []
         for idx, (wavs, off) in enumerate(zip(file_groups, offsets)):
             gain = gains_list[idx] if gains_list is not None else 1.0
+            ctcss = ctcss_list[idx]
+            dcs = dcs_list[idx]
+            if ctcss is not None and dcs is not None:
+                raise ValueError(
+                    f"Channel {idx + 1} cannot enable both CTCSS and DCS simultaneously"
+                )
             ch = NBFMChannel(
                 wav_paths=wavs,
                 deviation=deviation,
@@ -410,6 +536,8 @@ class MultiNBFMTx(gr.top_block):
                 audio_gain=gain,
                 loop_queue=loop_queue,
                 expected_audio_sr=audio_sr,
+                ctcss_hz=ctcss,
+                dcs_code=dcs,
             )
             self.channels.append(ch)
 
@@ -528,6 +656,22 @@ def parse_args():
         help="Optional per-channel audio gains (linear scale)",
     )
     p.add_argument(
+        "--ctcss-tones",
+        nargs="+",
+        help=(
+            "Optional per-channel CTCSS tone frequencies in Hz; use 'none' to disable "
+            "for a specific channel"
+        ),
+    )
+    p.add_argument(
+        "--dcs-codes",
+        nargs="+",
+        help=(
+            "Optional per-channel DCS codes (3-digit octal); use 'none' to disable "
+            "for a specific channel"
+        ),
+    )
+    p.add_argument(
         "--offsets",
         nargs="+",
         type=float,
@@ -588,6 +732,41 @@ def parse_args():
             p.error("--channel-gains must include one value per channel")
         args.channel_gains = list(args.channel_gains)
 
+    if args.ctcss_tones is not None:
+        if len(args.ctcss_tones) != num_channels:
+            p.error("--ctcss-tones must include one value per channel")
+        parsed_ctcss: List[Optional[float]] = []
+        for entry in args.ctcss_tones:
+            text = str(entry).strip().lower()
+            if text in {"", "none", "off", "disable"}:
+                parsed_ctcss.append(None)
+                continue
+            try:
+                freq = float(text)
+            except ValueError as exc:
+                p.error(f"Invalid CTCSS tone value '{entry}': {exc}")
+            if freq <= 0:
+                p.error("CTCSS tones must be positive frequencies in Hz")
+            parsed_ctcss.append(freq)
+        args.ctcss_tones = parsed_ctcss
+
+    if args.dcs_codes is not None:
+        if len(args.dcs_codes) != num_channels:
+            p.error("--dcs-codes must include one value per channel")
+        parsed_dcs: List[Optional[str]] = []
+        for entry in args.dcs_codes:
+            text = str(entry).strip()
+            if not text or text.lower() in {"none", "off", "disable"}:
+                parsed_dcs.append(None)
+            else:
+                parsed_dcs.append(text)
+        args.dcs_codes = parsed_dcs
+
+    if args.ctcss_tones is not None and args.dcs_codes is not None:
+        for idx, (ctcss, dcs) in enumerate(zip(args.ctcss_tones, args.dcs_codes), start=1):
+            if ctcss is not None and dcs is not None:
+                p.error(f"Channel {idx} cannot enable both CTCSS and DCS simultaneously")
+
     return args
 
 if __name__ == "__main__":
@@ -605,6 +784,8 @@ if __name__ == "__main__":
         master_scale=args.master_scale,
         loop_queue=args.loop_queue,
         channel_gains=args.channel_gains,
+        ctcss_tones=args.ctcss_tones,
+        dcs_codes=args.dcs_codes,
     )
     try:
         tb.start()
