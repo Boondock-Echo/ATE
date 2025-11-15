@@ -588,9 +588,21 @@ class MultiNBFMTx(gr.top_block):
         if ctcss_tones is None:
             ctcss_list: List[Optional[float]] = [None] * num_channels
         else:
-            if len(ctcss_tones) != num_channels:
+            tones_seq = list(ctcss_tones)
+            if len(tones_seq) == 1 and num_channels > 1:
+                tones_seq.extend([None] * (num_channels - 1))
+            elif len(tones_seq) != num_channels:
                 raise ValueError("--ctcss-tones must include one value per channel")
-            ctcss_list = [float(t) if t is not None else None for t in ctcss_tones]
+
+            ctcss_list = []
+            for tone in tones_seq:
+                if tone is None:
+                    ctcss_list.append(None)
+                else:
+                    ctcss_list.append(float(tone))
+
+        if any(ctcss is not None for ctcss in ctcss_list[1:]):
+            raise ValueError("Only channel 1 may enable CTCSS at this time")
 
         if dcs_codes is None:
             dcs_list: List[Optional[str]] = [None] * num_channels
@@ -818,8 +830,6 @@ def parse_args():
         args.channel_gains = list(args.channel_gains)
 
     if args.ctcss_tones is not None:
-        if len(args.ctcss_tones) != num_channels:
-            p.error("--ctcss-tones must include one value per channel")
         parsed_ctcss: List[Optional[float]] = []
         for entry in args.ctcss_tones:
             text = str(entry).strip().lower()
@@ -833,6 +843,12 @@ def parse_args():
             if freq <= 0:
                 p.error("CTCSS tones must be positive frequencies in Hz")
             parsed_ctcss.append(freq)
+
+        if len(parsed_ctcss) == 1 and num_channels > 1:
+            parsed_ctcss.extend([None] * (num_channels - 1))
+        elif len(parsed_ctcss) != num_channels:
+            p.error("--ctcss-tones must include one value per channel or a single value for channel 1")
+
         args.ctcss_tones = parsed_ctcss
 
     if args.dcs_codes is not None:
