@@ -605,9 +605,6 @@ class MultiNBFMTx(gr.top_block):
                 else:
                     ctcss_list.append(float(tone))
 
-        if any(ctcss is not None for ctcss in ctcss_list[1:]):
-            raise ValueError("Only channel 1 may enable CTCSS at this time")
-
         if ctcss_level <= 0:
             raise ValueError("--ctcss-level must be positive when provided")
 
