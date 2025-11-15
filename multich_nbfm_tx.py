@@ -282,7 +282,7 @@ class DCSGenerator(gr.sync_block):
 
     _BIT_RATE = 134.4
     _MARK_FREQ = 134.4
-    _SPACE_FREQ = 104.6
+    _SPACE_FREQ = 114.3
 
     # Systematic Golay(23, 12) parity rows used by the CDCSS specification.
     _GOLAY_PARITY_ROWS: Sequence[int] = (
@@ -450,15 +450,16 @@ class NBFMChannel(gr.hier_block2):
         # Gain on audio (if you need per-channel loudness trim)
         self.program_gain = blocks.multiply_const_ff(audio_gain)
 
-        # (Optional) simple audio band-limit (speech)
-        # Keep ~300–3000 Hz; gentle filter to reduce wideband noise
+        # (Optional) simple audio band-limit (speech). Apply this before adding
+        # sub-audible tones so we do not attenuate the CTCSS/DCS waveforms.
+        # Keep ~300–3000 Hz; gentle filter to reduce wideband noise.
         self.a_lpf = filter.fir_filter_fff(
             1, firdes.low_pass(1.0, audio_sr, 3400, 800, window.WIN_HAMMING)
         )
 
-        self.connect(self.src, self.program_gain)
+        self.connect(self.src, self.program_gain, self.a_lpf)
 
-        mix_sources: List[gr.basic_block] = [self.program_gain]
+        mix_sources: List[gr.basic_block] = [self.a_lpf]
         self._mix_adders: List[blocks.add_ff] = []
 
         self.ctcss_src = None
@@ -543,8 +544,15 @@ class NBFMChannel(gr.hier_block2):
         )
 
         # --- Connections ---
-        self.connect(mixed_audio, self.a_lpf, self.a_resamp, self.fm,
-                     self.bb_lpf, self.rot, self.c_resamp, self)
+        self.connect(
+            mixed_audio,
+            self.a_resamp,
+            self.fm,
+            self.bb_lpf,
+            self.rot,
+            self.c_resamp,
+            self,
+        )
 
 class MultiNBFMTx(gr.top_block):
     def __init__(
