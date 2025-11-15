@@ -457,9 +457,9 @@ class NBFMChannel(gr.hier_block2):
             1, firdes.low_pass(1.0, audio_sr, 3400, 800, window.WIN_HAMMING)
         )
 
-        self.connect(self.src, self.program_gain)
+        self.connect(self.src, self.program_gain, self.a_lpf)
 
-        mix_sources: List[gr.basic_block] = [self.program_gain]
+        mix_sources: List[gr.basic_block] = [self.a_lpf]
         self._mix_adders: List[blocks.add_ff] = []
 
         self.ctcss_src = None
