@@ -284,17 +284,36 @@ class DCSGenerator(gr.sync_block):
     _MARK_FREQ = 134.4
     _SPACE_FREQ = 104.6
 
+    # Systematic Golay(23, 12) parity rows used by the CDCSS specification.
+    _GOLAY_PARITY_ROWS: Sequence[int] = (
+        0b11110000101,
+        0b01111000011,
+        0b00111100011,
+        0b10011110001,
+        0b11001111000,
+        0b11100111100,
+        0b01110011110,
+        0b00111001111,
+        0b10001100111,
+        0b11000110011,
+        0b11100011001,
+        0b11110001100,
+    )
+
     def __init__(
         self,
         code: str,
         sample_rate: int,
         amplitude: float = 0.2,
     ):
-        code = (code or "").strip()
-        if not code:
+        raw_code = (code or "").strip()
+        if not raw_code:
             raise ValueError("A DCS code string is required when enabling DCS")
         if sample_rate <= 0:
             raise ValueError("Sample rate must be positive for DCS generation")
+
+        parsed_code, invert = self._parse_code(raw_code)
+        pattern = self._build_pattern(parsed_code, invert)
 
         gr.sync_block.__init__(
             self,
@@ -303,20 +322,6 @@ class DCSGenerator(gr.sync_block):
             out_sig=[np.float32],
         )
 
-        try:
-            value = int(code, 8)
-        except ValueError as exc:
-            raise ValueError(f"Invalid DCS code '{code}'; expected octal digits") from exc
-
-        bits = [int(b) for b in format(value, "09b")]
-        complement_source: List[int] = []
-        while len(complement_source) < 14:
-            complement_source.extend(bits)
-        complement_source = complement_source[:14]
-        pattern = bits + [1 - b for b in complement_source]
-        if not pattern:
-            raise ValueError("Unable to derive DCS pattern from the provided code")
-
         self._pattern = pattern
         self._sample_rate = float(sample_rate)
         self._amplitude = float(amplitude)
@@ -324,6 +329,75 @@ class DCSGenerator(gr.sync_block):
         self._bit_index = 0
         self._bit_sample_acc = 0.0
         self._phase = 0.0
+
+    @staticmethod
+    def _parse_code(code: str) -> tuple[str, bool]:
+        """Normalise a user provided DCS code string.
+
+        Accepts optional leading "D" and trailing "N"/"I" suffixes that appear
+        in many radio programming guides. Returns the zero-padded octal code and a
+        boolean indicating whether the *inverted* form was requested.
+        """
+
+        text = code.strip().upper()
+        if text.startswith("D"):
+            text = text[1:]
+        invert = False
+        if text.endswith("N") or text.endswith("I"):
+            invert = text.endswith("I")
+            text = text[:-1]
+        if not text:
+            raise ValueError("A DCS code string must include octal digits")
+        if any(ch not in "01234567" for ch in text):
+            raise ValueError(f"Invalid DCS code '{code}'; expected octal digits")
+        if len(text) > 3:
+            raise ValueError(
+                f"Invalid DCS code '{code}'; expected at most three octal digits"
+            )
+        return text.zfill(3), invert
+
+    @classmethod
+    def _build_pattern(cls, code: str, invert: bool) -> List[int]:
+        """Construct the 23-bit repeating CDCSS pattern for ``code``."""
+
+        try:
+            value = int(code, 8)
+        except ValueError as exc:  # pragma: no cover - validated earlier
+            raise ValueError(f"Invalid DCS code '{code}'; expected octal digits") from exc
+
+        # Data bits A–L (LSB first within each digit) followed by Golay parity.
+        digits = [(value >> shift) & 0x7 for shift in (0, 3, 6)]
+        data_bits: List[int] = []
+        for digit in digits:
+            data_bits.extend([(digit >> bit) & 0x1 for bit in range(3)])
+
+        if len(data_bits) != 9:
+            raise AssertionError("Unexpected DCS digit expansion")
+
+        a, b, c, d, e, f, g, h, i = data_bits
+        data_bits.extend(
+            [
+                (a ^ d ^ e ^ g) & 0x1,
+                (b ^ e ^ f ^ h) & 0x1,
+                (c ^ f ^ g ^ i) & 0x1,
+            ]
+        )
+
+        if len(data_bits) != 12:
+            raise AssertionError("Unexpected DCS data bit count")
+
+        parity = 0
+        for bit, row in zip(data_bits, cls._GOLAY_PARITY_ROWS):
+            if bit:
+                parity ^= row
+
+        pattern = list(data_bits)
+        pattern.extend((parity >> idx) & 0x1 for idx in range(11))
+
+        if invert:
+            pattern = [1 - b for b in pattern]
+
+        return pattern
 
     def work(self, input_items, output_items):  # pragma: no cover - realtime stream
         out = output_items[0]
