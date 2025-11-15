@@ -546,7 +546,6 @@ class NBFMChannel(gr.hier_block2):
         # --- Connections ---
         self.connect(
             mixed_audio,
-            self.a_lpf,
             self.a_resamp,
             self.fm,
             self.bb_lpf,
