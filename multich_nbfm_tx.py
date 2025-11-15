@@ -433,6 +433,7 @@ class NBFMChannel(gr.hier_block2):
         loop_queue: bool = True,
         expected_audio_sr: Optional[float] = None,
         ctcss_hz: Optional[float] = None,
+        ctcss_level: float = 0.25,
         dcs_code: Optional[str] = None,
     ):
         gr.hier_block2.__init__(
@@ -469,11 +470,13 @@ class NBFMChannel(gr.hier_block2):
         if ctcss_hz is not None:
             if ctcss_hz <= 0:
                 raise ValueError("CTCSS frequency must be positive when enabled")
+            if ctcss_level <= 0:
+                raise ValueError("CTCSS level must be positive when CTCSS is enabled")
             self.ctcss_src = analog.sig_source_f(
                 audio_sr,
                 analog.GR_SIN_WAVE,
                 float(ctcss_hz),
-                0.25,
+                float(ctcss_level),
                 0.0,
             )
             mix_sources.append(self.ctcss_src)
@@ -573,6 +576,7 @@ class MultiNBFMTx(gr.top_block):
         loop_queue: bool = True,
         channel_gains: Optional[Sequence[float]] = None,
         ctcss_tones: Optional[Sequence[Optional[float]]] = None,
+        ctcss_level: float = 0.35,
         dcs_codes: Optional[Sequence[Optional[str]]] = None,
     ):
         gr.top_block.__init__(self, "MultiNBFM TX")
@@ -604,6 +608,9 @@ class MultiNBFMTx(gr.top_block):
         if any(ctcss is not None for ctcss in ctcss_list[1:]):
             raise ValueError("Only channel 1 may enable CTCSS at this time")
 
+        if ctcss_level <= 0:
+            raise ValueError("--ctcss-level must be positive when provided")
+
         if dcs_codes is None:
             dcs_list: List[Optional[str]] = [None] * num_channels
         else:
@@ -634,6 +641,7 @@ class MultiNBFMTx(gr.top_block):
                 loop_queue=loop_queue,
                 expected_audio_sr=audio_sr,
                 ctcss_hz=ctcss,
+                ctcss_level=ctcss_level,
                 dcs_code=dcs,
             )
             self.channels.append(ch)
@@ -761,6 +769,15 @@ def parse_args():
         ),
     )
     p.add_argument(
+        "--ctcss-level",
+        type=float,
+        default=0.35,
+        help=(
+            "Amplitude of the generated CTCSS tone (scales frequency deviation); "
+            "values between 0.2 and 0.5 typically yield 600–1500 Hz deviation"
+        ),
+    )
+    p.add_argument(
         "--dcs-codes",
         nargs="+",
         help=(
@@ -868,6 +885,9 @@ def parse_args():
             if ctcss is not None and dcs is not None:
                 p.error(f"Channel {idx} cannot enable both CTCSS and DCS simultaneously")
 
+    if args.ctcss_level is not None and args.ctcss_level <= 0:
+        p.error("--ctcss-level must be positive")
+
     return args
 
 if __name__ == "__main__":
@@ -886,6 +906,7 @@ if __name__ == "__main__":
         loop_queue=args.loop_queue,
         channel_gains=args.channel_gains,
         ctcss_tones=args.ctcss_tones,
+        ctcss_level=args.ctcss_level,
         dcs_codes=args.dcs_codes,
     )
     try:

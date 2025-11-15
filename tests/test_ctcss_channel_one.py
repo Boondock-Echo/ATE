@@ -166,7 +166,7 @@ def test_ctcss_only_on_first_channel():
     ctcss_source = tx.channels[0].ctcss_src
     assert isinstance(ctcss_source, _DummySigSource)
     assert ctcss_source.frequency == pytest.approx(67.0)
-    assert ctcss_source.amplitude == pytest.approx(0.25)
+    assert ctcss_source.amplitude == pytest.approx(0.35)
     assert tx.channels[1].ctcss_src is None
 
 
@@ -182,3 +182,20 @@ def test_ctcss_second_channel_rejected():
             ctcss_tones=[67.0, 71.9],
             dcs_codes=[None, None],
         )
+
+
+def test_ctcss_level_configurable():
+    multich = _import_module()
+
+    tx = multich.MultiNBFMTx(
+        device="hackrf",
+        center_freq=462.6e6,
+        file_groups=[[Path("ch1.wav")]],
+        offsets=[0.0],
+        ctcss_tones=[100.0],
+        ctcss_level=0.48,
+    )
+
+    ctcss_source = tx.channels[0].ctcss_src
+    assert isinstance(ctcss_source, _DummySigSource)
+    assert ctcss_source.amplitude == pytest.approx(0.48)
