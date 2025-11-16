@@ -16,8 +16,9 @@ from multich_nbfm_tx import MultiNBFMTx
 DEFAULT_TX_SAMPLE_RATE = 8_000_000
 DEFAULT_MOD_SAMPLE_RATE = 250_000
 DEFAULT_DEVIATION_HZ = 3_000
-DEFAULT_MASTER_SCALE = 0.8
-DEFAULT_CTCSS_LEVEL = 0.35
+DEFAULT_MASTER_SCALE = 0.6
+DEFAULT_CTCSS_LEVEL = 0.20
+DEFAULT_TX_GAIN_OVERRIDE = 10.0
 
 
 @dataclass(frozen=True)
@@ -275,7 +276,7 @@ class MultiChannelApp(tk.Tk):
         master_scale: float = DEFAULT_MASTER_SCALE,
         ctcss_level: float = DEFAULT_CTCSS_LEVEL,
         ctcss_deviation: Optional[float] = None,
-        tx_gain_override: Optional[float] = None,
+        tx_gain_override: Optional[float] = DEFAULT_TX_GAIN_OVERRIDE,
     ):
         super().__init__()
 
@@ -659,7 +660,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tx-gain",
         type=float,
-        default=None,
+        default=DEFAULT_TX_GAIN_OVERRIDE,
         help="Optional default TX gain override (dB) applied regardless of device",
     )
     return parser.parse_args()
