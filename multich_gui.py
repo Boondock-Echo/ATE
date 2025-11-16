@@ -92,7 +92,7 @@ class ChannelRow(ttk.Frame):
     """Widget that captures per-channel configuration."""
 
     def __init__(self, master, presets: List[ChannelPreset], remove_callback):
-        super().__init__(master)
+        super().__init__(master, style="ChannelRow.TFrame", padding=8)
         self.remove_callback = remove_callback
         self.preset_var = tk.StringVar()
         self.gain_var = tk.StringVar(value="1.0")
@@ -101,6 +101,8 @@ class ChannelRow(ttk.Frame):
         self._preset_map: Dict[str, ChannelPreset] = {
             preset.label: preset for preset in presets
         }
+        self._base_style = "ChannelRow.TFrame"
+        self._error_style = "ChannelRowError.TFrame"
 
         self.header = ttk.Label(self, text="Channel")
         self.header.grid(row=0, column=0, padx=4, pady=2, sticky="w")
@@ -125,50 +127,130 @@ class ChannelRow(ttk.Frame):
         self.gain_entry = ttk.Entry(self, textvariable=self.gain_var, width=10)
         self.gain_entry.grid(row=2, column=1, padx=4, pady=2, sticky="we")
 
-        self.ctcss_var = tk.BooleanVar(value=False)
-        self.dcs_var = tk.BooleanVar(value=False)
+        self.ctcss_mode = tk.StringVar(value="off")
+        self.ctcss_custom_var = tk.StringVar()
+        self.dcs_mode = tk.StringVar(value="off")
+        self.dcs_custom_var = tk.StringVar()
+        self._ctcss_user_override = False
+        self._dcs_user_override = False
         self._ctcss_value: Optional[float] = None
         self._dcs_value: Optional[str] = None
 
         ttk.Label(self, text="CTCSS Tone:").grid(
-            row=3, column=0, padx=4, pady=2, sticky="w"
+            row=3, column=0, padx=4, pady=2, sticky="nw"
         )
-        self.ctcss_check = ttk.Checkbutton(
-            self,
-            text="Enable",
-            variable=self.ctcss_var,
-            command=self._on_ctcss_toggle,
+        ctcss_frame = ttk.Frame(self)
+        ctcss_frame.grid(row=3, column=1, columnspan=2, sticky="we", padx=4, pady=2)
+        self.ctcss_off = ttk.Radiobutton(
+            ctcss_frame,
+            text="Off",
+            variable=self.ctcss_mode,
+            value="off",
+            command=self._on_ctcss_mode_change,
         )
-        self.ctcss_check.grid(row=3, column=1, padx=4, pady=2, sticky="w")
-        self.ctcss_info = ttk.Label(self, text="Not available")
-        self.ctcss_info.grid(row=3, column=2, padx=4, pady=2, sticky="w")
+        self.ctcss_off.grid(row=0, column=0, sticky="w")
+        self.ctcss_preset_radio = ttk.Radiobutton(
+            ctcss_frame,
+            text="Preset",
+            variable=self.ctcss_mode,
+            value="preset",
+            command=self._on_ctcss_mode_change,
+        )
+        self.ctcss_preset_radio.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.ctcss_custom_radio = ttk.Radiobutton(
+            ctcss_frame,
+            text="Custom:",
+            variable=self.ctcss_mode,
+            value="custom",
+            command=self._on_ctcss_mode_change,
+        )
+        self.ctcss_custom_radio.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        self.ctcss_entry = ttk.Entry(ctcss_frame, textvariable=self.ctcss_custom_var, width=8)
+        self.ctcss_entry.grid(row=0, column=3, sticky="w", padx=(2, 0))
 
         ttk.Label(self, text="DCS Code:").grid(
-            row=4, column=0, padx=4, pady=2, sticky="w"
+            row=4, column=0, padx=4, pady=2, sticky="nw"
         )
-        self.dcs_check = ttk.Checkbutton(
-            self,
-            text="Enable",
-            variable=self.dcs_var,
-            command=self._on_dcs_toggle,
+        dcs_frame = ttk.Frame(self)
+        dcs_frame.grid(row=4, column=1, columnspan=2, sticky="we", padx=4, pady=2)
+        self.dcs_off = ttk.Radiobutton(
+            dcs_frame,
+            text="Off",
+            variable=self.dcs_mode,
+            value="off",
+            command=self._on_dcs_mode_change,
         )
-        self.dcs_check.grid(row=4, column=1, padx=4, pady=2, sticky="w")
-        self.dcs_info = ttk.Label(self, text="Not available")
-        self.dcs_info.grid(row=4, column=2, padx=4, pady=2, sticky="w")
+        self.dcs_off.grid(row=0, column=0, sticky="w")
+        self.dcs_preset_radio = ttk.Radiobutton(
+            dcs_frame,
+            text="Preset",
+            variable=self.dcs_mode,
+            value="preset",
+            command=self._on_dcs_mode_change,
+        )
+        self.dcs_preset_radio.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.dcs_custom_radio = ttk.Radiobutton(
+            dcs_frame,
+            text="Custom:",
+            variable=self.dcs_mode,
+            value="custom",
+            command=self._on_dcs_mode_change,
+        )
+        self.dcs_custom_radio.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        self.dcs_entry = ttk.Entry(dcs_frame, textvariable=self.dcs_custom_var, width=8)
+        self.dcs_entry.grid(row=0, column=3, sticky="w", padx=(2, 0))
 
-        self.files_label = ttk.Label(self, text="No files selected", width=40)
-        self.files_label.grid(row=5, column=0, columnspan=2, padx=4, pady=2, sticky="we")
+        self.tone_status = ttk.Label(self, text="CTCSS off · DCS off", font=("", 9))
+        self.tone_status.grid(row=5, column=1, columnspan=2, padx=4, pady=(2, 2), sticky="w")
 
-        select_btn = ttk.Button(self, text="Choose Files", command=self.select_files)
-        select_btn.grid(row=1, column=2, padx=4, pady=2)
+        ttk.Label(self, text="Playlist:").grid(
+            row=6, column=0, padx=4, pady=(6, 2), sticky="nw"
+        )
+        playlist_frame = ttk.Frame(self)
+        playlist_frame.grid(
+            row=7, column=0, columnspan=2, padx=4, pady=2, sticky="nsew"
+        )
+        self.file_listbox = tk.Listbox(
+            playlist_frame,
+            height=5,
+            width=45,
+            exportselection=False,
+            selectmode=tk.BROWSE,
+        )
+        self.file_listbox.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(playlist_frame, orient="vertical", command=self.file_listbox.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.file_listbox.configure(yscrollcommand=scrollbar.set)
+        playlist_frame.columnconfigure(0, weight=1)
 
-        remove_btn = ttk.Button(self, text="Remove", command=self.remove)
-        remove_btn.grid(row=5, column=2, padx=4, pady=2)
+        controls = ttk.Frame(self)
+        controls.grid(row=7, column=2, rowspan=1, padx=4, pady=2, sticky="n")
+        controls.columnconfigure(0, weight=1)
+        ttk.Button(controls, text="Add…", command=self.add_files).grid(
+            row=0, column=0, pady=2, sticky="we"
+        )
+        ttk.Button(controls, text="Remove", command=self.remove_selected_files).grid(
+            row=1, column=0, pady=2, sticky="we"
+        )
+        ttk.Button(controls, text="Move Up", command=lambda: self.move_selected(-1)).grid(
+            row=2, column=0, pady=2, sticky="we"
+        )
+        ttk.Button(controls, text="Move Down", command=lambda: self.move_selected(1)).grid(
+            row=3, column=0, pady=2, sticky="we"
+        )
+
+        remove_btn = ttk.Button(self, text="Remove Channel", command=self.remove)
+        remove_btn.grid(row=8, column=2, padx=4, pady=4, sticky="e")
+
+        self.error_var = tk.StringVar(value="")
+        self.error_label = ttk.Label(self, textvariable=self.error_var, foreground="#a40000")
+        self.error_label.grid(row=8, column=0, columnspan=2, padx=4, pady=2, sticky="w")
 
         self.channel_combo.bind("<<ComboboxSelected>>", self._on_preset_changed)
         self._update_tone_controls()
 
         self.columnconfigure(1, weight=1)
+        self.rowconfigure(7, weight=1)
 
     def set_index(self, index: int) -> None:
         self.header.config(text=f"Channel {index}")
@@ -184,16 +266,41 @@ class ChannelRow(ttk.Frame):
         return preset.frequency_hz
 
     def get_ctcss_tone(self) -> Optional[float]:
-        if self.ctcss_var.get() and self._ctcss_value is not None:
+        mode = self.ctcss_mode.get()
+        if mode == "preset":
+            if self._ctcss_value is None:
+                raise ValueError("No preset CTCSS tone is available for this channel")
             return float(self._ctcss_value)
+        if mode == "custom":
+            value = self.ctcss_custom_var.get().strip()
+            if not value:
+                raise ValueError("Enter a custom CTCSS tone or turn it off")
+            try:
+                tone = float(value)
+            except ValueError as exc:
+                raise ValueError("Custom CTCSS tone must be numeric") from exc
+            if tone <= 0:
+                raise ValueError("Custom CTCSS tone must be positive")
+            return tone
         return None
 
     def get_dcs_code(self) -> Optional[str]:
-        if self.dcs_var.get() and self._dcs_value:
+        mode = self.dcs_mode.get()
+        if mode == "preset":
+            if not self._dcs_value:
+                raise ValueError("No preset DCS code is available for this channel")
             return str(self._dcs_value)
+        if mode == "custom":
+            code = self.dcs_custom_var.get().strip().upper()
+            if not code:
+                raise ValueError("Enter a custom DCS code or turn it off")
+            if not code.isdigit():
+                raise ValueError("Custom DCS codes must be numeric")
+            return code
         return None
 
-    def select_files(self) -> None:
+    def add_files(self) -> None:
+        self.clear_error()
         filenames = filedialog.askopenfilenames(
             title="Select audio files",
             filetypes=[
@@ -204,17 +311,46 @@ class ChannelRow(ttk.Frame):
             ],
         )
         if filenames:
-            self.files = [Path(name).expanduser() for name in filenames]
-            if len(self.files) == 1:
-                display = self.files[0].name
-            else:
-                display = f"{len(self.files)} files selected"
-            self.files_label.config(text=display)
+            self.files.extend(Path(name).expanduser() for name in filenames)
+            self._refresh_playlist()
+
+    def remove_selected_files(self) -> None:
+        self.clear_error()
+        selections = sorted(self.file_listbox.curselection(), reverse=True)
+        for idx in selections:
+            if 0 <= idx < len(self.files):
+                self.files.pop(idx)
+        self._refresh_playlist()
+
+    def move_selected(self, direction: int) -> None:
+        if direction not in (-1, 1):
+            return
+        self.clear_error()
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        new_index = index + direction
+        if not (0 <= new_index < len(self.files)):
+            return
+        self.files[index], self.files[new_index] = self.files[new_index], self.files[index]
+        self._refresh_playlist()
+        self.file_listbox.selection_set(new_index)
+
+    def _refresh_playlist(self) -> None:
+        self.file_listbox.delete(0, tk.END)
+        for path in self.files:
+            self.file_listbox.insert(tk.END, path.name)
 
     def remove(self) -> None:
         self.remove_callback(self)
 
     def _on_preset_changed(self, _event=None) -> None:
+        self.clear_error()
+        self._ctcss_user_override = False
+        self._dcs_user_override = False
+        self.ctcss_custom_var.set("")
+        self.dcs_custom_var.set("")
         self._update_tone_controls()
 
     def _update_tone_controls(self) -> None:
@@ -223,48 +359,96 @@ class ChannelRow(ttk.Frame):
         self._ctcss_value = preset.ctcss_hz if preset else None
         self._dcs_value = preset.dcs_code if preset else None
 
-        if self._ctcss_value is not None:
-            self.ctcss_check.state(["!disabled"])
+        ctcss_available = self._ctcss_value is not None
+        if ctcss_available:
+            self.ctcss_preset_radio.state(["!disabled"])
+            self.ctcss_preset_radio.config(
+                text=f"Preset ({self._ctcss_value:.1f} Hz)"
+            )
+            if not self._ctcss_user_override:
+                self.ctcss_mode.set("preset")
         else:
-            self.ctcss_var.set(False)
-            self.ctcss_check.state(["disabled"])
+            self.ctcss_preset_radio.state(["disabled"])
+            if not self._ctcss_user_override or self.ctcss_mode.get() == "preset":
+                self.ctcss_mode.set("off")
 
-        if self._dcs_value is not None:
-            self.dcs_check.state(["!disabled"])
+        dcs_available = self._dcs_value is not None
+        if dcs_available:
+            self.dcs_preset_radio.state(["!disabled"])
+            self.dcs_preset_radio.config(text=f"Preset ({self._dcs_value})")
+            if not self._dcs_user_override and self.ctcss_mode.get() == "off":
+                self.dcs_mode.set("preset")
         else:
-            self.dcs_var.set(False)
-            self.dcs_check.state(["disabled"])
+            self.dcs_preset_radio.state(["disabled"])
+            if not self._dcs_user_override or self.dcs_mode.get() == "preset":
+                self.dcs_mode.set("off")
 
+        # If a preset tone was automatically applied, ensure the opposite
+        # signalling mode stays disabled to avoid conflicting defaults.
+        if self.ctcss_mode.get() != "off" and self.dcs_mode.get() != "off":
+            if ctcss_available:
+                self.dcs_mode.set("off")
+            else:
+                self.ctcss_mode.set("off")
+
+        self._refresh_tone_status()
+
+    def _on_ctcss_mode_change(self) -> None:
+        self._ctcss_user_override = True
+        if self.ctcss_mode.get() != "off" and self.dcs_mode.get() != "off":
+            self.dcs_mode.set("off")
+        self._refresh_tone_status()
+
+    def _on_dcs_mode_change(self) -> None:
+        self._dcs_user_override = True
+        if self.dcs_mode.get() != "off" and self.ctcss_mode.get() != "off":
+            self.ctcss_mode.set("off")
         self._refresh_tone_status()
 
     def _refresh_tone_status(self) -> None:
-        if self._ctcss_value is not None:
-            status = "Enabled" if self.ctcss_var.get() else "Available"
-            self.ctcss_info.config(text=f"{self._ctcss_value:.1f} Hz ({status})")
+        self.clear_error()
+        if self.ctcss_mode.get() == "custom":
+            self.ctcss_entry.state(["!disabled"])
         else:
-            self.ctcss_info.config(text="Not available")
+            self.ctcss_entry.state(["disabled"])
 
-        if self._dcs_value is not None:
-            status = "Enabled" if self.dcs_var.get() else "Available"
-            self.dcs_info.config(text=f"Code {self._dcs_value} ({status})")
+        if self.dcs_mode.get() == "custom":
+            self.dcs_entry.state(["!disabled"])
         else:
-            self.dcs_info.config(text="Not available")
+            self.dcs_entry.state(["disabled"])
 
-    def _on_ctcss_toggle(self) -> None:
-        if self._ctcss_value is None:
-            self.ctcss_var.set(False)
-            return
-        if self.ctcss_var.get() and self.dcs_var.get():
-            self.dcs_var.set(False)
-        self._refresh_tone_status()
+        status_bits = []
+        if self.ctcss_mode.get() == "off":
+            status_bits.append("CTCSS off")
+        elif self.ctcss_mode.get() == "preset":
+            status_bits.append("CTCSS preset")
+        else:
+            status_bits.append("CTCSS custom")
 
-    def _on_dcs_toggle(self) -> None:
-        if self._dcs_value is None:
-            self.dcs_var.set(False)
-            return
-        if self.dcs_var.get() and self.ctcss_var.get():
-            self.ctcss_var.set(False)
-        self._refresh_tone_status()
+        if self.dcs_mode.get() == "off":
+            status_bits.append("DCS off")
+        elif self.dcs_mode.get() == "preset":
+            status_bits.append("DCS preset")
+        else:
+            status_bits.append("DCS custom")
+
+        self.tone_status.config(text=" · ".join(status_bits))
+
+    def clear_error(self) -> None:
+        self.error_var.set("")
+        self.configure(style=self._base_style)
+
+    def show_error(self, message: str) -> None:
+        self.error_var.set(message)
+        self.configure(style=self._error_style)
+
+
+class ChannelValidationError(ValueError):
+    """Raised when a specific channel row fails validation."""
+
+    def __init__(self, channel_index: int, message: str):
+        super().__init__(message)
+        self.channel_index = channel_index
 
 
 class CollapsibleSection(ttk.Frame):
@@ -375,12 +559,26 @@ class MultiChannelApp(tk.Tk):
         self.tb_thread: Optional[threading.Thread] = None
         self._run_error: Optional[Exception] = None
         self.running = False
+        self._setting_states: Dict[str, Dict[str, str]] = {}
+        self._setting_errors: Dict[str, str] = {}
+        self._setting_error_sources: Dict[str, str] = {}
+        self.settings_status_var = tk.StringVar(value="All transmitter settings look valid.")
 
         self._build_layout()
         self.add_channel()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _build_layout(self) -> None:
+        style = ttk.Style(self)
+        style.configure("ChannelRow.TFrame", borderwidth=1, relief="groove")
+        style.configure(
+            "ChannelRowError.TFrame",
+            borderwidth=2,
+            relief="solid",
+            background="#ffecec",
+        )
+        style.configure("Invalid.TEntry", fieldbackground="#ffecec")
+        style.configure("Invalid.TSpinbox", fieldbackground="#ffecec")
         padding = dict(padx=10, pady=5)
         main = ttk.Frame(self)
         main.pack(fill="both", expand=True, padx=10, pady=10)
@@ -404,38 +602,161 @@ class MultiChannelApp(tk.Tk):
         settings_section.grid(row=2, column=0, columnspan=3, sticky="we", **padding)
         settings = settings_section.content_frame
         subpad = dict(padx=4, pady=2)
-        entries = [
-            ("TX Sample Rate (sps):", self.tx_sr_var),
-            ("Mod Sample Rate (sps):", self.mod_sr_var),
-            ("FM Deviation (Hz):", self.deviation_var),
-            ("Master Scale:", self.master_scale_var),
-            ("CTCSS Level (amplitude):", self.ctcss_level_var),
-            ("CTCSS Deviation (Hz):", self.ctcss_deviation_var),
-            ("TX Gain Override (dB):", self.tx_gain_var),
-            ("Gate Open Threshold:", self.gate_open_var),
-            ("Gate Close Threshold:", self.gate_close_var),
-            ("Gate Attack (ms):", self.gate_attack_var),
-            ("Gate Release (ms):", self.gate_release_var),
-        ]
-        for idx, (label, var) in enumerate(entries):
-            ttk.Label(settings, text=label).grid(row=idx, column=0, sticky="w", **subpad)
-            ttk.Entry(settings, textvariable=var, width=18).grid(
-                row=idx, column=1, sticky="we", **subpad
-            )
-        ttk.Label(
-            settings,
-            text="Leave CTCSS deviation blank to rely on amplitude scaling.",
-            font=("", 9),
-        ).grid(row=len(entries), column=0, columnspan=2, sticky="w", **subpad)
-        ttk.Label(
-            settings,
-            text=(
-                "Gate tip: open≈0.015, close≈0.014, attack≈4 ms, release≈200 ms "
-                "keeps tones muted between tracks."
+        settings.columnconfigure(2, weight=1)
+        settings_fields = [
+            dict(
+                name="TX sample rate",
+                label="TX Sample Rate (sps):",
+                var=self.tx_sr_var,
+                min=1_000_000,
+                max=20_000_000,
+                step=100_000,
+                help="1–20 Msps keeps HackRF happy.",
             ),
-            font=("", 9),
-        ).grid(row=len(entries) + 1, column=0, columnspan=2, sticky="w", **subpad)
-        settings.columnconfigure(1, weight=1)
+            dict(
+                name="Mod sample rate",
+                label="Mod Sample Rate (sps):",
+                var=self.mod_sr_var,
+                min=10_000,
+                max=1_000_000,
+                step=5_000,
+                help="48–250 kS/s per channel works well.",
+            ),
+            dict(
+                name="FM deviation",
+                label="FM Deviation (Hz):",
+                var=self.deviation_var,
+                min=100,
+                max=75_000,
+                step=100,
+                help="NBFM is usually ±3 kHz.",
+            ),
+            dict(
+                name="Master scale",
+                label="Master Scale:",
+                var=self.master_scale_var,
+                min=0.1,
+                max=2.0,
+                step=0.05,
+                help="Scales the summed waveform before transmit.",
+            ),
+            dict(
+                name="CTCSS level",
+                label="CTCSS Level (amplitude):",
+                var=self.ctcss_level_var,
+                min=0.01,
+                max=1.0,
+                step=0.01,
+                help="0.05–0.3 keeps tones audible without clipping.",
+            ),
+            dict(
+                name="CTCSS deviation",
+                label="CTCSS Deviation (Hz):",
+                var=self.ctcss_deviation_var,
+                min=10,
+                max=1_000,
+                allow_empty=True,
+                help="Optional: overrides amplitude scaling when set.",
+                widget="entry",
+            ),
+            dict(
+                name="TX gain override",
+                label="TX Gain Override (dB):",
+                var=self.tx_gain_var,
+                min=-50,
+                max=70,
+                allow_empty=True,
+                help="Leave blank to rely on the device default.",
+                widget="entry",
+            ),
+            dict(
+                name="Gate open threshold",
+                label="Gate Open Threshold:",
+                var=self.gate_open_var,
+                min=0.0,
+                max=0.5,
+                step=0.001,
+                help="Signal level that starts the tone gate.",
+            ),
+            dict(
+                name="Gate close threshold",
+                label="Gate Close Threshold:",
+                var=self.gate_close_var,
+                min=0.0,
+                max=0.5,
+                step=0.001,
+                help="Must stay below the open threshold to prevent chatter.",
+            ),
+            dict(
+                name="Gate attack",
+                label="Gate Attack (ms):",
+                var=self.gate_attack_var,
+                min=0.0,
+                max=1_000.0,
+                allow_empty=True,
+                help="Blank uses the default 4 ms fade-in.",
+                widget="entry",
+            ),
+            dict(
+                name="Gate release",
+                label="Gate Release (ms):",
+                var=self.gate_release_var,
+                min=0.0,
+                max=5_000.0,
+                allow_empty=True,
+                help="Blank uses the default 200 ms tail.",
+                widget="entry",
+            ),
+        ]
+
+        for idx, field in enumerate(settings_fields):
+            ttk.Label(settings, text=field["label"]).grid(
+                row=idx, column=0, sticky="w", **subpad
+            )
+            if field.get("widget", "spinbox") == "spinbox":
+                widget = ttk.Spinbox(
+                    settings,
+                    textvariable=field["var"],
+                    from_=field.get("min", 0.0),
+                    to=field.get("max", 0.0),
+                    increment=field.get("step", 1.0),
+                    width=18,
+                )
+            else:
+                widget = ttk.Entry(settings, textvariable=field["var"], width=18)
+            widget.grid(row=idx, column=1, sticky="we", **subpad)
+            helper = field.get("help")
+            if helper:
+                ttk.Label(settings, text=helper, font=("", 9)).grid(
+                    row=idx, column=2, sticky="w", **subpad
+                )
+            self._register_numeric_validator(
+                field_name=field["name"],
+                display_name=field.get("display_name", field["label"].rstrip(":")),
+                var=field["var"],
+                widget=widget,
+                allow_empty=field.get("allow_empty", False),
+                minimum=field.get("min"),
+                maximum=field.get("max"),
+            )
+
+        self.settings_status_label = ttk.Label(
+            settings,
+            textvariable=self.settings_status_var,
+            font=("", 9, "italic"),
+            foreground="#1f6f00",
+        )
+        self.settings_status_label.grid(
+            row=len(settings_fields),
+            column=0,
+            columnspan=3,
+            sticky="w",
+            **subpad,
+        )
+
+        self.gate_open_var.trace_add("write", self._validate_gate_relationship)
+        self.gate_close_var.trace_add("write", self._validate_gate_relationship)
+        self._validate_gate_relationship()
 
         ttk.Separator(main).grid(row=3, column=0, columnspan=3, sticky="we", pady=(10, 5))
 
@@ -492,6 +813,10 @@ class MultiChannelApp(tk.Tk):
             if section is not None:
                 section.set_title(f"Channel {idx}")
 
+    def _clear_channel_errors(self) -> None:
+        for row in self.channel_rows:
+            row.clear_error()
+
     def _collect_channel_data(self):
         file_groups: List[List[Path]] = []
         freqs: List[float] = []
@@ -500,23 +825,31 @@ class MultiChannelApp(tk.Tk):
         dcs_codes: List[Optional[str]] = []
 
         for idx, row in enumerate(self.channel_rows, start=1):
-            freq = row.get_frequency()
-            if not row.files:
-                raise ValueError("Each channel must have at least one audio file selected")
-            gain_str = row.gain_var.get().strip()
             try:
+                freq = row.get_frequency()
+                if not row.files:
+                    raise ValueError("Add at least one audio file to the playlist")
+                gain_str = row.gain_var.get().strip()
                 gain = float(gain_str) if gain_str else 1.0
             except ValueError as exc:
-                raise ValueError(f"Invalid gain for channel {idx}") from exc
-            file_groups.append(row.files)
+                raise ChannelValidationError(idx, str(exc)) from exc
+
+            try:
+                tone = row.get_ctcss_tone()
+                dcs = row.get_dcs_code()
+            except ValueError as exc:
+                raise ChannelValidationError(idx, str(exc)) from exc
+
+            if tone is not None and dcs is not None:
+                raise ChannelValidationError(
+                    idx, "CTCSS and DCS cannot be enabled at the same time"
+                )
+
+            file_groups.append(list(row.files))
             freqs.append(freq)
             gains.append(gain)
-            ctcss_tones.append(row.get_ctcss_tone())
-            dcs_codes.append(row.get_dcs_code())
-            if ctcss_tones[-1] is not None and dcs_codes[-1] is not None:
-                raise ValueError(
-                    f"Channel {idx} cannot enable both CTCSS and DCS simultaneously"
-                )
+            ctcss_tones.append(tone)
+            dcs_codes.append(dcs)
 
         min_freq = min(freqs)
         max_freq = max(freqs)
@@ -524,6 +857,109 @@ class MultiChannelApp(tk.Tk):
         frequency_offsets = [freq - center_freq for freq in freqs]
 
         return center_freq, file_groups, frequency_offsets, gains, ctcss_tones, dcs_codes
+
+    def _register_numeric_validator(
+        self,
+        *,
+        field_name: str,
+        display_name: str,
+        var: tk.StringVar,
+        widget,
+        allow_empty: bool = False,
+        minimum: Optional[float] = None,
+        maximum: Optional[float] = None,
+    ) -> None:
+        default_style = widget.cget("style") or widget.winfo_class()
+        error_style = f"Invalid.{widget.winfo_class()}"
+        self._setting_states[field_name] = {
+            "widget": widget,
+            "default_style": default_style,
+            "error_style": error_style,
+        }
+
+        def _validate(*_ignored):
+            text = var.get().strip()
+            if not text:
+                if allow_empty:
+                    self._clear_setting_error(field_name)
+                    return
+                self._mark_setting_error(field_name, f"{display_name} is required.")
+                return
+            try:
+                value = float(text)
+            except ValueError:
+                self._mark_setting_error(field_name, f"{display_name} must be numeric.")
+                return
+            if minimum is not None and value < minimum:
+                self._mark_setting_error(
+                    field_name,
+                    f"{display_name} must be ≥ {minimum:g}.",
+                )
+                return
+            if maximum is not None and value > maximum:
+                self._mark_setting_error(
+                    field_name,
+                    f"{display_name} must be ≤ {maximum:g}.",
+                )
+                return
+            self._clear_setting_error(field_name)
+
+        var.trace_add("write", _validate)
+        _validate()
+
+    def _mark_setting_error(self, field_name: str, message: str, *, source: str = "base") -> None:
+        state = self._setting_states.get(field_name)
+        if state:
+            state["widget"].configure(style=state["error_style"])
+        self._setting_errors[field_name] = message
+        self._setting_error_sources[field_name] = source
+        self._update_settings_status()
+
+    def _clear_setting_error(self, field_name: str) -> None:
+        state = self._setting_states.get(field_name)
+        if state:
+            state["widget"].configure(style=state["default_style"])
+        self._setting_errors.pop(field_name, None)
+        self._setting_error_sources.pop(field_name, None)
+        self._update_settings_status()
+
+    def _update_settings_status(self) -> None:
+        if self._setting_errors:
+            message = next(iter(self._setting_errors.values()))
+            self.settings_status_var.set(message)
+            if hasattr(self, "settings_status_label"):
+                self.settings_status_label.config(foreground="#a40000")
+        else:
+            self.settings_status_var.set("All transmitter settings look valid.")
+            if hasattr(self, "settings_status_label"):
+                self.settings_status_label.config(foreground="#1f6f00")
+
+    def _safe_float(self, text: str) -> Optional[float]:
+        stripped = text.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+
+    def _validate_gate_relationship(self, *_ignored) -> None:
+        if self._setting_error_sources.get("Gate open threshold") == "base":
+            return
+        if self._setting_error_sources.get("Gate close threshold") == "base":
+            return
+        open_val = self._safe_float(self.gate_open_var.get())
+        close_val = self._safe_float(self.gate_close_var.get())
+        if open_val is None or close_val is None:
+            return
+        if close_val >= open_val:
+            self._mark_setting_error(
+                "Gate close threshold",
+                "Gate close threshold must be lower than the open threshold.",
+                source="cross",
+            )
+        else:
+            self._clear_setting_error("Gate close threshold")
 
     def _parse_float_entry(
         self,
@@ -604,6 +1040,13 @@ class MultiChannelApp(tk.Tk):
     def start_transmission(self) -> None:
         if self.running:
             return
+        self._clear_channel_errors()
+        self.status_var.set("Validating configuration…")
+        if self._setting_errors:
+            first_error = next(iter(self._setting_errors.values()))
+            self.status_var.set(first_error)
+            self.bell()
+            return
         try:
             (
                 center_freq,
@@ -613,7 +1056,14 @@ class MultiChannelApp(tk.Tk):
                 ctcss_tones,
                 dcs_codes,
             ) = self._collect_channel_data()
+        except ChannelValidationError as exc:
+            if 0 < exc.channel_index <= len(self.channel_rows):
+                self.channel_rows[exc.channel_index - 1].show_error(str(exc))
+            self.status_var.set(f"Channel {exc.channel_index}: {exc}")
+            self.bell()
+            return
         except ValueError as exc:
+            self.status_var.set(str(exc))
             messagebox.showerror("Invalid configuration", str(exc))
             return
 
@@ -632,6 +1082,7 @@ class MultiChannelApp(tk.Tk):
                 gate_release,
             ) = self._parse_transmitter_settings()
         except ValueError as exc:
+            self.status_var.set(str(exc))
             messagebox.showerror("Invalid configuration", str(exc))
             return
 
