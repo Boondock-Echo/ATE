@@ -37,8 +37,10 @@ graph TD
   control, and either baseband offsets or direct frequency entry (`--freqs`).
 * `multich_gui.py` – lightweight Tkinter GUI that wraps the transmitter so you
   can configure devices, FRS/GMRS channel selections, per-channel playlists,
-  and gain levels without memorizing CLI arguments. All RF parameters are
-  baked into the GUI for a known-good launch configuration.
+  and gain levels without memorizing CLI arguments. Editable fields expose the
+  TX sample rate, modulation rate, FM deviation, master scale, and CTCSS tone
+  level/deviation so you can experiment with squelch settings; pass
+  `python multich_gui.py --help` to override their defaults via CLI flags.
 
 ### Channel presets
 

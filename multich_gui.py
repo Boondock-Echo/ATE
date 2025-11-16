@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Lightweight GUI wrapper for the multi-channel NBFM transmitter."""
 
+import argparse
 import csv
 import threading
 import tkinter as tk
@@ -10,6 +11,13 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
 from multich_nbfm_tx import MultiNBFMTx
+
+
+DEFAULT_TX_SAMPLE_RATE = 8_000_000
+DEFAULT_MOD_SAMPLE_RATE = 250_000
+DEFAULT_DEVIATION_HZ = 3_000
+DEFAULT_MASTER_SCALE = 0.8
+DEFAULT_CTCSS_LEVEL = 0.35
 
 
 @dataclass(frozen=True)
@@ -252,10 +260,6 @@ class ChannelRow(ttk.Frame):
 
 
 class MultiChannelApp(tk.Tk):
-    TX_SAMPLE_RATE = 8_000_000
-    MOD_SAMPLE_RATE = 250_000
-    DEVIATION_HZ = 3_000
-    MASTER_SCALE = 0.8
     TX_GAIN_DEFAULTS = {
         "hackrf": 0.0,
         "pluto": -10.0,
@@ -263,7 +267,16 @@ class MultiChannelApp(tk.Tk):
         "plutoplussdr": -10.0,
     }
 
-    def __init__(self):
+    def __init__(
+        self,
+        tx_sample_rate: float = DEFAULT_TX_SAMPLE_RATE,
+        mod_sample_rate: float = DEFAULT_MOD_SAMPLE_RATE,
+        deviation_hz: float = DEFAULT_DEVIATION_HZ,
+        master_scale: float = DEFAULT_MASTER_SCALE,
+        ctcss_level: float = DEFAULT_CTCSS_LEVEL,
+        ctcss_deviation: Optional[float] = None,
+        tx_gain_override: Optional[float] = None,
+    ):
         super().__init__()
 
         self.title("Multi-channel NBFM TX")
@@ -277,6 +290,17 @@ class MultiChannelApp(tk.Tk):
 
         self.device_var = tk.StringVar(value="hackrf")
         self.loop_var = tk.BooleanVar(value=True)
+        self.tx_sr_var = tk.StringVar(value=f"{float(tx_sample_rate)}")
+        self.mod_sr_var = tk.StringVar(value=f"{float(mod_sample_rate)}")
+        self.deviation_var = tk.StringVar(value=f"{float(deviation_hz)}")
+        self.master_scale_var = tk.StringVar(value=f"{float(master_scale)}")
+        self.ctcss_level_var = tk.StringVar(value=f"{float(ctcss_level)}")
+        self.ctcss_deviation_var = tk.StringVar(
+            value="" if ctcss_deviation is None else f"{float(ctcss_deviation)}"
+        )
+        self.tx_gain_var = tk.StringVar(
+            value="" if tx_gain_override is None else f"{float(tx_gain_override)}"
+        )
 
         self.channel_rows: List[ChannelRow] = []
         self.tb: Optional[MultiNBFMTx] = None
@@ -308,16 +332,29 @@ class MultiChannelApp(tk.Tk):
             variable=self.loop_var,
         ).grid(row=1, column=0, columnspan=2, sticky="w", **padding)
 
+        settings = ttk.LabelFrame(main, text="Transmitter Settings")
+        settings.grid(row=2, column=0, columnspan=3, sticky="we", **padding)
+        subpad = dict(padx=4, pady=2)
+        entries = [
+            ("TX Sample Rate (sps):", self.tx_sr_var),
+            ("Mod Sample Rate (sps):", self.mod_sr_var),
+            ("FM Deviation (Hz):", self.deviation_var),
+            ("Master Scale:", self.master_scale_var),
+            ("CTCSS Level (amplitude):", self.ctcss_level_var),
+            ("CTCSS Deviation (Hz):", self.ctcss_deviation_var),
+            ("TX Gain Override (dB):", self.tx_gain_var),
+        ]
+        for idx, (label, var) in enumerate(entries):
+            ttk.Label(settings, text=label).grid(row=idx, column=0, sticky="w", **subpad)
+            ttk.Entry(settings, textvariable=var, width=18).grid(
+                row=idx, column=1, sticky="we", **subpad
+            )
         ttk.Label(
-            main,
-            text=(
-                f"TX Sample Rate: {self.TX_SAMPLE_RATE:,} sps\n"
-                f"Mod Sample Rate: {self.MOD_SAMPLE_RATE:,} sps\n"
-                f"Deviation: {self.DEVIATION_HZ:,} Hz\n"
-                f"Master Scale: {self.MASTER_SCALE:.2f}"
-            ),
-            justify="left",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", **padding)
+            settings,
+            text="Leave CTCSS deviation blank to rely on amplitude scaling.",
+            font=("", 9),
+        ).grid(row=len(entries), column=0, columnspan=2, sticky="w", **subpad)
+        settings.columnconfigure(1, weight=1)
 
         ttk.Separator(main).grid(row=3, column=0, columnspan=3, sticky="we", pady=(10, 5))
 
@@ -394,6 +431,56 @@ class MultiChannelApp(tk.Tk):
 
         return center_freq, file_groups, frequency_offsets, gains, ctcss_tones, dcs_codes
 
+    def _parse_float_entry(
+        self,
+        var: tk.StringVar,
+        field_name: str,
+        *,
+        positive: bool = False,
+        optional: bool = False,
+    ) -> Optional[float]:
+        text = var.get().strip()
+        if not text:
+            if optional:
+                return None
+            raise ValueError(f"{field_name} is required")
+        try:
+            value = float(text)
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be a valid number") from exc
+        if positive and value <= 0:
+            raise ValueError(f"{field_name} must be positive")
+        return value
+
+    def _parse_transmitter_settings(self):
+        tx_sr = self._parse_float_entry(self.tx_sr_var, "TX sample rate", positive=True)
+        mod_sr = self._parse_float_entry(self.mod_sr_var, "Mod sample rate", positive=True)
+        deviation = self._parse_float_entry(self.deviation_var, "FM deviation", positive=True)
+        master_scale = self._parse_float_entry(
+            self.master_scale_var, "Master scale", positive=True
+        )
+        ctcss_level = self._parse_float_entry(
+            self.ctcss_level_var, "CTCSS level", positive=True
+        )
+        ctcss_deviation = self._parse_float_entry(
+            self.ctcss_deviation_var,
+            "CTCSS deviation",
+            positive=True,
+            optional=True,
+        )
+        tx_gain_override = self._parse_float_entry(
+            self.tx_gain_var, "TX gain override", optional=True
+        )
+        return (
+            tx_sr,
+            mod_sr,
+            deviation,
+            master_scale,
+            ctcss_level,
+            ctcss_deviation,
+            tx_gain_override,
+        )
+
     def start_transmission(self) -> None:
         if self.running:
             return
@@ -410,12 +497,25 @@ class MultiChannelApp(tk.Tk):
             messagebox.showerror("Invalid configuration", str(exc))
             return
 
-        tx_sr = float(self.TX_SAMPLE_RATE)
-        mod_sr = float(self.MOD_SAMPLE_RATE)
-        deviation = float(self.DEVIATION_HZ)
-        master_scale = float(self.MASTER_SCALE)
+        try:
+            (
+                tx_sr,
+                mod_sr,
+                deviation,
+                master_scale,
+                ctcss_level,
+                ctcss_deviation,
+                tx_gain_override,
+            ) = self._parse_transmitter_settings()
+        except ValueError as exc:
+            messagebox.showerror("Invalid configuration", str(exc))
+            return
+
         audio_sr = None
-        tx_gain = self.TX_GAIN_DEFAULTS.get(self.device_var.get(), 0.0)
+        if tx_gain_override is not None:
+            tx_gain = float(tx_gain_override)
+        else:
+            tx_gain = self.TX_GAIN_DEFAULTS.get(self.device_var.get(), 0.0)
 
         self.tb = MultiNBFMTx(
             device=self.device_var.get(),
@@ -431,6 +531,8 @@ class MultiChannelApp(tk.Tk):
             loop_queue=self.loop_var.get(),
             channel_gains=gains,
             ctcss_tones=ctcss_tones,
+            ctcss_level=ctcss_level,
+            ctcss_deviation=ctcss_deviation,
             dcs_codes=dcs_codes,
         )
 
@@ -502,8 +604,65 @@ class MultiChannelApp(tk.Tk):
 
 
 def main() -> None:
-    app = MultiChannelApp()
+    args = parse_args()
+    app = MultiChannelApp(
+        tx_sample_rate=args.tx_sr,
+        mod_sample_rate=args.mod_sr,
+        deviation_hz=args.deviation,
+        master_scale=args.master_scale,
+        ctcss_level=args.ctcss_level,
+        ctcss_deviation=args.ctcss_deviation,
+        tx_gain_override=args.tx_gain,
+    )
     app.mainloop()
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Tkinter front-end for the multi-channel NBFM transmitter."
+            " Use these options to override the default transmitter settings"
+            " exposed in the GUI."
+        )
+    )
+    parser.add_argument("--tx-sr", type=float, default=DEFAULT_TX_SAMPLE_RATE, help="Default TX sample rate (sps)")
+    parser.add_argument(
+        "--mod-sr",
+        type=float,
+        default=DEFAULT_MOD_SAMPLE_RATE,
+        help="Default per-channel modulation sample rate (sps)",
+    )
+    parser.add_argument(
+        "--deviation",
+        type=float,
+        default=DEFAULT_DEVIATION_HZ,
+        help="Default per-channel FM deviation (Hz)",
+    )
+    parser.add_argument(
+        "--master-scale",
+        type=float,
+        default=DEFAULT_MASTER_SCALE,
+        help="Default master amplitude scale applied to the summed waveform",
+    )
+    parser.add_argument(
+        "--ctcss-level",
+        type=float,
+        default=DEFAULT_CTCSS_LEVEL,
+        help="Default CTCSS amplitude used when a channel enables tone transmit",
+    )
+    parser.add_argument(
+        "--ctcss-deviation",
+        type=float,
+        default=None,
+        help="Default CTCSS deviation target (Hz). Overrides the level when set.",
+    )
+    parser.add_argument(
+        "--tx-gain",
+        type=float,
+        default=None,
+        help="Optional default TX gain override (dB) applied regardless of device",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
