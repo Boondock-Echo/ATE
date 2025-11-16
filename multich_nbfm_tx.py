@@ -433,7 +433,7 @@ class NBFMChannel(gr.hier_block2):
         loop_queue: bool = True,
         expected_audio_sr: Optional[float] = None,
         ctcss_hz: Optional[float] = None,
-        ctcss_level: float = 0.25,
+        ctcss_level: float = 0.35,
         dcs_code: Optional[str] = None,
     ):
         gr.hier_block2.__init__(
@@ -577,6 +577,7 @@ class MultiNBFMTx(gr.top_block):
         channel_gains: Optional[Sequence[float]] = None,
         ctcss_tones: Optional[Sequence[Optional[float]]] = None,
         ctcss_level: float = 0.35,
+        ctcss_deviation: Optional[float] = None,
         dcs_codes: Optional[Sequence[Optional[str]]] = None,
     ):
         gr.top_block.__init__(self, "MultiNBFM TX")
@@ -605,8 +606,18 @@ class MultiNBFMTx(gr.top_block):
                 else:
                     ctcss_list.append(float(tone))
 
-        if ctcss_level <= 0:
-            raise ValueError("--ctcss-level must be positive when provided")
+        has_any_ctcss = any(tone is not None for tone in ctcss_list)
+
+        effective_ctcss_level = float(ctcss_level)
+        if has_any_ctcss and effective_ctcss_level <= 0:
+            raise ValueError("--ctcss-level must be positive when CTCSS is enabled")
+
+        if ctcss_deviation is not None:
+            if ctcss_deviation <= 0:
+                raise ValueError("--ctcss-deviation must be positive when provided")
+            if deviation <= 0:
+                raise ValueError("Deviation must be positive when using --ctcss-deviation")
+            effective_ctcss_level = float(ctcss_deviation) / float(deviation)
 
         if dcs_codes is None:
             dcs_list: List[Optional[str]] = [None] * num_channels
@@ -616,6 +627,7 @@ class MultiNBFMTx(gr.top_block):
             dcs_list = [str(code).strip() or None if code is not None else None for code in dcs_codes]
 
         self.tx_sr = tx_sr
+        self._ctcss_level = effective_ctcss_level
 
         # Per-channel builders
         self.channels: List[gr.hier_block2] = []
@@ -638,7 +650,7 @@ class MultiNBFMTx(gr.top_block):
                 loop_queue=loop_queue,
                 expected_audio_sr=audio_sr,
                 ctcss_hz=ctcss,
-                ctcss_level=ctcss_level,
+                ctcss_level=self._ctcss_level,
                 dcs_code=dcs,
             )
             self.channels.append(ch)
@@ -775,6 +787,15 @@ def parse_args():
         ),
     )
     p.add_argument(
+        "--ctcss-deviation",
+        type=float,
+        help=(
+            "Target frequency deviation, in Hz, for the CTCSS tone. When provided, "
+            "this overrides --ctcss-level by deriving the required amplitude from "
+            "the selected FM deviation."
+        ),
+    )
+    p.add_argument(
         "--dcs-codes",
         nargs="+",
         help=(
@@ -884,6 +905,8 @@ def parse_args():
 
     if args.ctcss_level is not None and args.ctcss_level <= 0:
         p.error("--ctcss-level must be positive")
+    if args.ctcss_deviation is not None and args.ctcss_deviation <= 0:
+        p.error("--ctcss-deviation must be positive")
 
     return args
 
@@ -904,6 +927,7 @@ if __name__ == "__main__":
         channel_gains=args.channel_gains,
         ctcss_tones=args.ctcss_tones,
         ctcss_level=args.ctcss_level,
+        ctcss_deviation=args.ctcss_deviation,
         dcs_codes=args.dcs_codes,
     )
     try:

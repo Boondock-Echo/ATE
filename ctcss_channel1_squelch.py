@@ -50,6 +50,15 @@ def parse_args() -> argparse.Namespace:
         default=0.35,
         help="Amplitude of the generated CTCSS tone (controls frequency deviation)",
     )
+    parser.add_argument(
+        "--ctcss-deviation",
+        type=float,
+        default=None,
+        help=(
+            "Desired CTCSS deviation in Hz. When provided, overrides --ctcss-level "
+            "by converting the requested deviation into the appropriate amplitude."
+        ),
+    )
     parser.add_argument("--master-scale", type=float, default=0.8, help="Master amplitude scaling applied to the composite signal")
     return parser.parse_args()
 
@@ -59,6 +68,8 @@ def main() -> None:
 
     if args.ctcss_level <= 0:
         raise SystemExit("--ctcss-level must be positive")
+    if args.ctcss_deviation is not None and args.ctcss_deviation <= 0:
+        raise SystemExit("--ctcss-deviation must be positive")
 
     silence_sr = 48_000
 
@@ -82,6 +93,7 @@ def main() -> None:
             channel_gains=[0.0],
             ctcss_tones=[args.ctcss_tone],
             ctcss_level=args.ctcss_level,
+            ctcss_deviation=args.ctcss_deviation,
         )
 
         tx.start()
