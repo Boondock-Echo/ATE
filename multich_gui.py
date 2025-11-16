@@ -10,7 +10,13 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
-from multich_nbfm_tx import MultiNBFMTx
+from multich_nbfm_tx import (
+    DEFAULT_GATE_ATTACK_MS,
+    DEFAULT_GATE_CLOSE_THRESHOLD,
+    DEFAULT_GATE_OPEN_THRESHOLD,
+    DEFAULT_GATE_RELEASE_MS,
+    MultiNBFMTx,
+)
 
 
 DEFAULT_TX_SAMPLE_RATE = 8_000_000
@@ -277,6 +283,10 @@ class MultiChannelApp(tk.Tk):
         ctcss_level: float = DEFAULT_CTCSS_LEVEL,
         ctcss_deviation: Optional[float] = None,
         tx_gain_override: Optional[float] = DEFAULT_TX_GAIN_OVERRIDE,
+        gate_open_threshold: float = DEFAULT_GATE_OPEN_THRESHOLD,
+        gate_close_threshold: float = DEFAULT_GATE_CLOSE_THRESHOLD,
+        gate_attack_ms: float = DEFAULT_GATE_ATTACK_MS,
+        gate_release_ms: float = DEFAULT_GATE_RELEASE_MS,
     ):
         super().__init__()
 
@@ -302,6 +312,10 @@ class MultiChannelApp(tk.Tk):
         self.tx_gain_var = tk.StringVar(
             value="" if tx_gain_override is None else f"{float(tx_gain_override)}"
         )
+        self.gate_open_var = tk.StringVar(value=f"{float(gate_open_threshold)}")
+        self.gate_close_var = tk.StringVar(value=f"{float(gate_close_threshold)}")
+        self.gate_attack_var = tk.StringVar(value=f"{float(gate_attack_ms)}")
+        self.gate_release_var = tk.StringVar(value=f"{float(gate_release_ms)}")
 
         self.channel_rows: List[ChannelRow] = []
         self.tb: Optional[MultiNBFMTx] = None
@@ -344,6 +358,10 @@ class MultiChannelApp(tk.Tk):
             ("CTCSS Level (amplitude):", self.ctcss_level_var),
             ("CTCSS Deviation (Hz):", self.ctcss_deviation_var),
             ("TX Gain Override (dB):", self.tx_gain_var),
+            ("Gate Open Threshold:", self.gate_open_var),
+            ("Gate Close Threshold:", self.gate_close_var),
+            ("Gate Attack (ms):", self.gate_attack_var),
+            ("Gate Release (ms):", self.gate_release_var),
         ]
         for idx, (label, var) in enumerate(entries):
             ttk.Label(settings, text=label).grid(row=idx, column=0, sticky="w", **subpad)
@@ -355,6 +373,14 @@ class MultiChannelApp(tk.Tk):
             text="Leave CTCSS deviation blank to rely on amplitude scaling.",
             font=("", 9),
         ).grid(row=len(entries), column=0, columnspan=2, sticky="w", **subpad)
+        ttk.Label(
+            settings,
+            text=(
+                "Gate tip: open≈0.015, close≈0.006, attack≈4 ms, release≈200 ms "
+                "keeps tones muted between tracks."
+            ),
+            font=("", 9),
+        ).grid(row=len(entries) + 1, column=0, columnspan=2, sticky="w", **subpad)
         settings.columnconfigure(1, weight=1)
 
         ttk.Separator(main).grid(row=3, column=0, columnspan=3, sticky="we", pady=(10, 5))
@@ -472,6 +498,28 @@ class MultiChannelApp(tk.Tk):
         tx_gain_override = self._parse_float_entry(
             self.tx_gain_var, "TX gain override", optional=True
         )
+        gate_open = self._parse_float_entry(
+            self.gate_open_var, "Gate open threshold", positive=True
+        )
+        gate_close = self._parse_float_entry(
+            self.gate_close_var, "Gate close threshold", positive=True
+        )
+        if gate_close >= gate_open:
+            raise ValueError("Gate close threshold must be lower than the open threshold")
+        gate_attack = self._parse_float_entry(
+            self.gate_attack_var, "Gate attack (ms)", optional=True
+        )
+        gate_release = self._parse_float_entry(
+            self.gate_release_var, "Gate release (ms)", optional=True
+        )
+        if gate_attack is None:
+            gate_attack = DEFAULT_GATE_ATTACK_MS
+        if gate_attack < 0:
+            raise ValueError("Gate attack must be non-negative")
+        if gate_release is None:
+            gate_release = DEFAULT_GATE_RELEASE_MS
+        if gate_release < 0:
+            raise ValueError("Gate release must be non-negative")
         return (
             tx_sr,
             mod_sr,
@@ -480,6 +528,10 @@ class MultiChannelApp(tk.Tk):
             ctcss_level,
             ctcss_deviation,
             tx_gain_override,
+            gate_open,
+            gate_close,
+            gate_attack,
+            gate_release,
         )
 
     def start_transmission(self) -> None:
@@ -507,6 +559,10 @@ class MultiChannelApp(tk.Tk):
                 ctcss_level,
                 ctcss_deviation,
                 tx_gain_override,
+                gate_open,
+                gate_close,
+                gate_attack,
+                gate_release,
             ) = self._parse_transmitter_settings()
         except ValueError as exc:
             messagebox.showerror("Invalid configuration", str(exc))
@@ -535,6 +591,10 @@ class MultiChannelApp(tk.Tk):
             ctcss_level=ctcss_level,
             ctcss_deviation=ctcss_deviation,
             dcs_codes=dcs_codes,
+            gate_open_threshold=gate_open,
+            gate_close_threshold=gate_close,
+            gate_attack_ms=gate_attack,
+            gate_release_ms=gate_release,
         )
 
         self.running = True
@@ -614,6 +674,10 @@ def main() -> None:
         ctcss_level=args.ctcss_level,
         ctcss_deviation=args.ctcss_deviation,
         tx_gain_override=args.tx_gain,
+        gate_open_threshold=args.gate_open,
+        gate_close_threshold=args.gate_close,
+        gate_attack_ms=args.gate_attack_ms,
+        gate_release_ms=args.gate_release_ms,
     )
     app.mainloop()
 
@@ -662,6 +726,30 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_TX_GAIN_OVERRIDE,
         help="Optional default TX gain override (dB) applied regardless of device",
+    )
+    parser.add_argument(
+        "--gate-open",
+        type=float,
+        default=DEFAULT_GATE_OPEN_THRESHOLD,
+        help="Default gate open threshold (absolute amplitude)",
+    )
+    parser.add_argument(
+        "--gate-close",
+        type=float,
+        default=DEFAULT_GATE_CLOSE_THRESHOLD,
+        help="Default gate close threshold (absolute amplitude)",
+    )
+    parser.add_argument(
+        "--gate-attack-ms",
+        type=float,
+        default=DEFAULT_GATE_ATTACK_MS,
+        help="Default gate attack in milliseconds",
+    )
+    parser.add_argument(
+        "--gate-release-ms",
+        type=float,
+        default=DEFAULT_GATE_RELEASE_MS,
+        help="Default gate release in milliseconds",
     )
     return parser.parse_args()
 
