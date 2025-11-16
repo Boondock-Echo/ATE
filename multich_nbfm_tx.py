@@ -402,7 +402,7 @@ class DCSGenerator(gr.sync_block):
 
         return pattern
 
-    def work(self, input_items, output_items):  # pragma: no cover - realtime stream
+    def work(self, input_items, output_items):
         out = output_items[0]
         for idx in range(len(out)):
             bit = self._pattern[self._bit_index]
@@ -416,6 +416,78 @@ class DCSGenerator(gr.sync_block):
             if self._bit_sample_acc >= self._samples_per_bit:
                 self._bit_sample_acc -= self._samples_per_bit
                 self._bit_index = (self._bit_index + 1) % len(self._pattern)
+        return len(out)
+
+
+class AudioActivityGate(gr.sync_block):
+    """Emit a 0/1 gate depending on the audio envelope level."""
+
+    def __init__(
+        self,
+        sample_rate: int,
+        open_threshold: float = 1e-3,
+        close_threshold: Optional[float] = None,
+        attack_ms: float = 5.0,
+        release_ms: float = 150.0,
+    ):
+        if sample_rate <= 0:
+            raise ValueError("AudioActivityGate sample_rate must be positive")
+        if open_threshold <= 0:
+            raise ValueError("AudioActivityGate open_threshold must be positive")
+
+        gr.sync_block.__init__(
+            self,
+            name="AudioActivityGate",
+            in_sig=[np.float32],
+            out_sig=[np.float32],
+        )
+
+        close = open_threshold * 0.5 if close_threshold is None else float(close_threshold)
+        if close <= 0 or close >= open_threshold:
+            raise ValueError("close_threshold must be between 0 and open_threshold")
+
+        self._open_level = float(open_threshold)
+        self._close_level = float(close)
+        self._sample_rate = float(sample_rate)
+        self._attack_coeff = self._exp_coeff(attack_ms)
+        self._release_coeff = self._exp_coeff(release_ms)
+        self._envelope = 0.0
+        self._state = False
+
+    def _exp_coeff(self, time_ms: float) -> float:
+        if time_ms <= 0:
+            return 0.0
+        tau = (time_ms / 1000.0) * self._sample_rate
+        if tau <= 0:
+            return 0.0
+        return math.exp(-1.0 / tau)
+
+    def work(self, input_items, output_items):
+        audio = input_items[0]
+        out = output_items[0]
+        attack = self._attack_coeff
+        release = self._release_coeff
+        envelope = self._envelope
+        state = self._state
+        open_level = self._open_level
+        close_level = self._close_level
+
+        for idx, sample in enumerate(audio):
+            value = abs(sample)
+            coeff = attack if value >= envelope else release
+            envelope = (1.0 - coeff) * value + coeff * envelope
+
+            if state:
+                if envelope <= close_level:
+                    state = False
+            else:
+                if envelope >= open_level:
+                    state = True
+
+            out[idx] = 1.0 if state else 0.0
+
+        self._envelope = envelope
+        self._state = state
         return len(out)
 
 
@@ -474,11 +546,14 @@ class NBFMChannel(gr.hier_block2):
         )
 
         self.connect(self.src, self.program_gain, self.a_lpf)
+        self.audio_gate = AudioActivityGate(audio_sr)
+        self.connect(self.a_lpf, self.audio_gate)
 
         mix_sources: List[gr.basic_block] = [self.a_lpf]
         self._mix_adders: List[blocks.add_ff] = []
 
         self.ctcss_src = None
+        self.ctcss_gate = None
         if ctcss_hz is not None:
             if ctcss_hz <= 0:
                 raise ValueError("CTCSS frequency must be positive when enabled")
@@ -491,15 +566,22 @@ class NBFMChannel(gr.hier_block2):
                 float(ctcss_level),
                 0.0,
             )
-            mix_sources.append(self.ctcss_src)
+            self.ctcss_gate = blocks.multiply_ff()
+            self.connect(self.ctcss_src, (self.ctcss_gate, 0))
+            self.connect(self.audio_gate, (self.ctcss_gate, 1))
+            mix_sources.append(self.ctcss_gate)
             self._ctcss_hz = float(ctcss_hz)
             self._ctcss_level = float(ctcss_level)
 
         self.dcs_src = None
+        self.dcs_gate = None
         if dcs_code is not None and str(dcs_code).strip():
             code_text = str(dcs_code)
             self.dcs_src = DCSGenerator(code_text, audio_sr, amplitude=0.25)
-            mix_sources.append(self.dcs_src)
+            self.dcs_gate = blocks.multiply_ff()
+            self.connect(self.dcs_src, (self.dcs_gate, 0))
+            self.connect(self.audio_gate, (self.dcs_gate, 1))
+            mix_sources.append(self.dcs_gate)
             self._dcs_code = code_text
 
         if len(mix_sources) == 1:
