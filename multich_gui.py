@@ -173,6 +173,7 @@ class ChannelRow(ttk.Frame):
     def set_index(self, index: int) -> None:
         self.header.config(text=f"Channel {index}")
 
+
     def get_frequency(self) -> float:
         label = self.preset_var.get().strip()
         if not label:
@@ -266,6 +267,57 @@ class ChannelRow(ttk.Frame):
         self._refresh_tone_status()
 
 
+class CollapsibleSection(ttk.Frame):
+    """A simple collapsible container with a toggle button header."""
+
+    def __init__(self, master, title: str, *, collapsed: bool = False):
+        super().__init__(master)
+        self._title = title
+        self._collapsed = bool(collapsed)
+
+        self.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(self)
+        header.grid(row=0, column=0, sticky="we")
+
+        self._toggle_btn = ttk.Button(
+            header,
+            command=self.toggle,
+            style="Toolbutton",
+            padding=2,
+        )
+        self._toggle_btn.grid(row=0, column=0, sticky="w")
+
+        self._title_label = ttk.Label(header, text=title, font=("", 11, "bold"))
+        self._title_label.grid(row=0, column=1, sticky="w", padx=(4, 0))
+
+        header.columnconfigure(1, weight=1)
+
+        self.content_frame = ttk.Frame(self)
+        self.content_frame.grid(row=1, column=0, sticky="we")
+        if collapsed:
+            self.content_frame.grid_remove()
+
+        self._refresh_toggle_text()
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self._title_label.config(text=title)
+        self._refresh_toggle_text()
+
+    def toggle(self) -> None:
+        self._collapsed = not self._collapsed
+        if self._collapsed:
+            self.content_frame.grid_remove()
+        else:
+            self.content_frame.grid(row=1, column=0, sticky="we")
+        self._refresh_toggle_text()
+
+    def _refresh_toggle_text(self) -> None:
+        symbol = "►" if self._collapsed else "▼"
+        self._toggle_btn.config(text=symbol)
+
+
 class MultiChannelApp(tk.Tk):
     TX_GAIN_DEFAULTS = {
         "hackrf": 0.0,
@@ -318,6 +370,7 @@ class MultiChannelApp(tk.Tk):
         self.gate_release_var = tk.StringVar(value=f"{float(gate_release_ms)}")
 
         self.channel_rows: List[ChannelRow] = []
+        self._channel_sections: Dict[ChannelRow, CollapsibleSection] = {}
         self.tb: Optional[MultiNBFMTx] = None
         self.tb_thread: Optional[threading.Thread] = None
         self._run_error: Optional[Exception] = None
@@ -347,8 +400,9 @@ class MultiChannelApp(tk.Tk):
             variable=self.loop_var,
         ).grid(row=1, column=0, columnspan=2, sticky="w", **padding)
 
-        settings = ttk.LabelFrame(main, text="Transmitter Settings")
-        settings.grid(row=2, column=0, columnspan=3, sticky="we", **padding)
+        settings_section = CollapsibleSection(main, title="Transmitter Settings")
+        settings_section.grid(row=2, column=0, columnspan=3, sticky="we", **padding)
+        settings = settings_section.content_frame
         subpad = dict(padx=4, pady=2)
         entries = [
             ("TX Sample Rate (sps):", self.tx_sr_var),
@@ -376,7 +430,7 @@ class MultiChannelApp(tk.Tk):
         ttk.Label(
             settings,
             text=(
-                "Gate tip: open≈0.015, close≈0.006, attack≈4 ms, release≈200 ms "
+                "Gate tip: open≈0.015, close≈0.014, attack≈4 ms, release≈200 ms "
                 "keeps tones muted between tracks."
             ),
             font=("", 9),
@@ -409,11 +463,14 @@ class MultiChannelApp(tk.Tk):
         main.rowconfigure(4, weight=1)
 
     def add_channel(self) -> None:
-        row = ChannelRow(self.channels_container, self.presets, self.remove_channel)
+        section = CollapsibleSection(self.channels_container, title="")
+        section.grid(row=len(self.channel_rows), column=0, sticky="we", pady=4)
+        row = ChannelRow(section.content_frame, self.presets, self.remove_channel)
+        row.grid(row=0, column=0, sticky="we")
         self.channel_rows.append(row)
-        row.grid(row=len(self.channel_rows) - 1, column=0, sticky="we", pady=4)
-        row.set_index(len(self.channel_rows))
+        self._channel_sections[row] = section
         self.channels_container.columnconfigure(0, weight=1)
+        self._refresh_channel_indices()
 
     def remove_channel(self, row: ChannelRow) -> None:
         if row in self.channel_rows:
@@ -421,9 +478,19 @@ class MultiChannelApp(tk.Tk):
                 messagebox.showwarning("Cannot remove", "At least one channel is required")
                 return
             self.channel_rows.remove(row)
-            row.destroy()
-            for idx, channel in enumerate(self.channel_rows, start=1):
-                channel.set_index(idx)
+            section = getattr(self, "_channel_sections", {}).pop(row, None)
+            if section is not None:
+                section.destroy()
+            else:
+                row.destroy()
+            self._refresh_channel_indices()
+
+    def _refresh_channel_indices(self) -> None:
+        for idx, channel in enumerate(self.channel_rows, start=1):
+            channel.set_index(idx)
+            section = getattr(self, "_channel_sections", {}).get(channel)
+            if section is not None:
+                section.set_title(f"Channel {idx}")
 
     def _collect_channel_data(self):
         file_groups: List[List[Path]] = []
