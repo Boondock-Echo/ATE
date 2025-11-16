@@ -96,6 +96,8 @@ def main() -> None:
             ctcss_deviation=args.ctcss_deviation,
         )
 
+        tx.print_configuration_summary()
+
         tx.start()
         print(
             "Transmitting continuous CTCSS tone on channel 1. Press Ctrl-C to stop, "

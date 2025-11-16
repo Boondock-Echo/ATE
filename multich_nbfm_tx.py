@@ -28,7 +28,7 @@ import time
 import wave
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 try:
     import audioread
@@ -442,6 +442,18 @@ class NBFMChannel(gr.hier_block2):
             gr.io_signature(1, 1, gr.sizeof_gr_complex)
         )
 
+        # Persist core settings for later inspection/reporting.
+        self._freq_offset = float(freq_offset)
+        self._audio_gain = float(audio_gain)
+        self._deviation = float(deviation)
+        self._mod_sr = float(mod_sr)
+        self._tx_sr = float(tx_sr)
+        self._speech_lpf_cutoff = 3400.0
+        self._baseband_lpf_cutoff = 20000.0
+        self._ctcss_hz: Optional[float] = None
+        self._ctcss_level: Optional[float] = None
+        self._dcs_code: Optional[str] = str(dcs_code) if dcs_code is not None else None
+
         # --- Blocks ---
         # Source (float, 48k mono). Audio source outputs floats in [-1,1].
         target_audio_sr = int(expected_audio_sr) if expected_audio_sr is not None else None
@@ -480,11 +492,15 @@ class NBFMChannel(gr.hier_block2):
                 0.0,
             )
             mix_sources.append(self.ctcss_src)
+            self._ctcss_hz = float(ctcss_hz)
+            self._ctcss_level = float(ctcss_level)
 
         self.dcs_src = None
         if dcs_code is not None and str(dcs_code).strip():
-            self.dcs_src = DCSGenerator(str(dcs_code), audio_sr, amplitude=0.25)
+            code_text = str(dcs_code)
+            self.dcs_src = DCSGenerator(code_text, audio_sr, amplitude=0.25)
             mix_sources.append(self.dcs_src)
+            self._dcs_code = code_text
 
         if len(mix_sources) == 1:
             mixed_audio = mix_sources[0]
@@ -560,6 +576,41 @@ class NBFMChannel(gr.hier_block2):
             self,
         )
 
+    def describe(self) -> Dict[str, Any]:
+        """Return a dictionary summarizing this channel's modulation path."""
+
+        audio_sr = (
+            int(self.src.sample_rate)
+            if hasattr(self, "src") and self.src.sample_rate is not None
+            else None
+        )
+
+        ctcss_dev = None
+        if self._ctcss_level is not None:
+            ctcss_dev = abs(self._ctcss_level) * self._deviation
+
+        highest_modulating = self._speech_lpf_cutoff
+        if self._ctcss_hz is not None:
+            highest_modulating = max(highest_modulating, self._ctcss_hz)
+
+        estimated_bw = 2.0 * (self._deviation + highest_modulating)
+
+        return {
+            "audio_sample_rate": audio_sr,
+            "mod_sample_rate": self._mod_sr,
+            "tx_sample_rate": self._tx_sr,
+            "freq_offset": self._freq_offset,
+            "audio_gain": self._audio_gain,
+            "deviation": self._deviation,
+            "ctcss_hz": self._ctcss_hz,
+            "ctcss_level": self._ctcss_level,
+            "ctcss_deviation": ctcss_dev,
+            "speech_lpf_cutoff": self._speech_lpf_cutoff,
+            "baseband_lpf_cutoff": self._baseband_lpf_cutoff,
+            "estimated_bandwidth": estimated_bw,
+            "dcs_code": self._dcs_code,
+        }
+
 class MultiNBFMTx(gr.top_block):
     def __init__(
         self,
@@ -581,6 +632,15 @@ class MultiNBFMTx(gr.top_block):
         dcs_codes: Optional[Sequence[Optional[str]]] = None,
     ):
         gr.top_block.__init__(self, "MultiNBFM TX")
+
+        self._device = device
+        self._center_freq = float(center_freq)
+        self._tx_sr = float(tx_sr)
+        self._tx_gain = float(tx_gain)
+        self._deviation = float(deviation)
+        self._mod_sr = float(mod_sr)
+        self._audio_sr = float(audio_sr) if audio_sr is not None else None
+        self._master_scale = float(master_scale)
 
         if len(file_groups) != len(offsets):
             raise ValueError("The number of file queues must match the number of offsets")
@@ -716,6 +776,53 @@ class MultiNBFMTx(gr.top_block):
 
         # Connect graph
         self.connect(self.summer, self.scale, self.sink)
+
+    def configuration_summary_lines(self) -> List[str]:
+        lines: List[str] = []
+        lines.append("MultiNBFMTx configuration summary:")
+        lines.append(
+            f"  Device={self._device} fc={self._center_freq/1e6:.6f} MHz tx_sr={self._tx_sr/1e6:.3f} Msps"
+        )
+        lines.append(
+            f"  mod_sr={self._mod_sr/1e3:.1f} ksps deviation=±{self._deviation:.0f} Hz master_scale={self._master_scale:.2f}"
+        )
+
+        for idx, channel in enumerate(self.channels, start=1):
+            desc = channel.describe()
+            freq_offset = desc["freq_offset"]
+            lines.append(
+                f"  Channel {idx}: offset={freq_offset/1e3:.2f} kHz audio_gain={desc['audio_gain']:.2f}"
+            )
+            if desc["audio_sample_rate"] is not None:
+                lines.append(
+                    f"    Audio SR {desc['audio_sample_rate']:.0f} Hz → Mod SR {desc['mod_sample_rate']:.0f} Hz → TX SR {desc['tx_sample_rate']:.0f} Hz"
+                )
+            else:
+                lines.append(
+                    f"    Audio SR auto → Mod SR {desc['mod_sample_rate']:.0f} Hz → TX SR {desc['tx_sample_rate']:.0f} Hz"
+                )
+            lines.append(
+                f"    Speech LPF {desc['speech_lpf_cutoff']:.0f} Hz, baseband LPF {desc['baseband_lpf_cutoff']:.0f} Hz"
+            )
+            lines.append(f"    Estimated Carson BW ≈ {desc['estimated_bandwidth']:.0f} Hz")
+            if desc["ctcss_hz"] is not None:
+                lines.append(
+                    "    CTCSS: "
+                    f"{desc['ctcss_hz']:.1f} Hz amplitude {desc['ctcss_level']:.3f} → deviation ±{desc['ctcss_deviation']:.0f} Hz"
+                )
+            if desc["dcs_code"]:
+                lines.append(f"    DCS: {desc['dcs_code']}")
+
+        return lines
+
+    def print_configuration_summary(self, file=None) -> None:
+        if file is None:
+            import sys
+
+            file = sys.stdout
+
+        for line in self.configuration_summary_lines():
+            print(line, file=file)
 
 def _parse_file_groups(file_args: Sequence[str]) -> List[List[Path]]:
     groups: List[List[Path]] = []
@@ -930,6 +1037,7 @@ if __name__ == "__main__":
         ctcss_deviation=args.ctcss_deviation,
         dcs_codes=args.dcs_codes,
     )
+    tb.print_configuration_summary()
     try:
         tb.start()
         print("Transmitting... Press Ctrl-C to stop.")
