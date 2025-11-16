@@ -5,7 +5,9 @@ Automated test engineering utilities focused on audio and RF experimentation.
 ## Multi-channel NBFM transmitter
 
 This repository includes a multi-channel narrowband FM transmitter that can
-drive HackRF, Pluto SDR, and PlutoPlus SDR devices.
+drive HackRF, Pluto SDR, and PlutoPlus SDR devices. The Python flowgraph in
+`multich_nbfm_tx.py` lets you queue playlists per-channel, apply per-channel
+gains, and stream the composite RF waveform out an `osmosdr` sink.
 
 ### High-level workflow
 
@@ -35,12 +37,26 @@ graph TD
   file queues (comma-separated file lists), optionally resamples mismatched
   audio sample rates on the fly, exposes per-channel gain trims, looping
   control, and either baseband offsets or direct frequency entry (`--freqs`).
+  Additional channel features include:
+  * Optional CTCSS tone generation per channel with either a normalized level
+    (`--ctcss-level`) or explicit deviation target (`--ctcss-deviation`).
+  * Optional DCS (CDCSS) code injection per channel so you can key receivers
+    that expect digital squelch signaling.
+  * Audio-driven gating (`--gate-open`, `--gate-close`, `--gate-attack-ms`,
+    `--gate-release-ms`) that mutes quiet segments before modulation so idle
+    channels do not inject unnecessary noise into the composite RF signal.
+  * Per-channel configuration summaries printed at start-up for quick
+    verification of offsets, gains, tone settings, and estimated bandwidth.
 * `multich_gui.py` – lightweight Tkinter GUI that wraps the transmitter so you
   can configure devices, FRS/GMRS channel selections, per-channel playlists,
   and gain levels without memorizing CLI arguments. Editable fields expose the
   TX sample rate, modulation rate, FM deviation, master scale, and CTCSS tone
   level/deviation so you can experiment with squelch settings; pass
   `python multich_gui.py --help` to override their defaults via CLI flags.
+* `ctcss_channel1_squelch.py` – helper utility that reuses the main
+  transmitter pipeline to broadcast a continuous CTCSS tone (default 67.0 Hz)
+  on channel 1. This is handy for validating that handheld receivers open
+  squelch for the configured tone without re-entering full playlists.
 
 ### Channel presets
 
