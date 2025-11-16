@@ -131,6 +131,8 @@ class ChannelRow(ttk.Frame):
         self.ctcss_custom_var = tk.StringVar()
         self.dcs_mode = tk.StringVar(value="off")
         self.dcs_custom_var = tk.StringVar()
+        self._ctcss_user_override = False
+        self._dcs_user_override = False
         self._ctcss_value: Optional[float] = None
         self._dcs_value: Optional[str] = None
 
@@ -345,6 +347,10 @@ class ChannelRow(ttk.Frame):
 
     def _on_preset_changed(self, _event=None) -> None:
         self.clear_error()
+        self._ctcss_user_override = False
+        self._dcs_user_override = False
+        self.ctcss_custom_var.set("")
+        self.dcs_custom_var.set("")
         self._update_tone_controls()
 
     def _update_tone_controls(self) -> None:
@@ -353,25 +359,37 @@ class ChannelRow(ttk.Frame):
         self._ctcss_value = preset.ctcss_hz if preset else None
         self._dcs_value = preset.dcs_code if preset else None
 
-        if self._ctcss_value is not None:
+        ctcss_available = self._ctcss_value is not None
+        if ctcss_available:
             self.ctcss_preset_radio.state(["!disabled"])
             self.ctcss_preset_radio.config(
                 text=f"Preset ({self._ctcss_value:.1f} Hz)"
             )
+            if not self._ctcss_user_override:
+                self.ctcss_mode.set("preset")
         else:
             self.ctcss_preset_radio.state(["disabled"])
-            if self.ctcss_mode.get() == "preset":
+            if not self._ctcss_user_override or self.ctcss_mode.get() == "preset":
                 self.ctcss_mode.set("off")
 
-        if self._dcs_value is not None:
+        dcs_available = self._dcs_value is not None
+        if dcs_available:
             self.dcs_preset_radio.state(["!disabled"])
             self.dcs_preset_radio.config(text=f"Preset ({self._dcs_value})")
+            if not self._dcs_user_override and self.ctcss_mode.get() == "off":
+                self.dcs_mode.set("preset")
         else:
             self.dcs_preset_radio.state(["disabled"])
-            if self.dcs_mode.get() == "preset":
+            if not self._dcs_user_override or self.dcs_mode.get() == "preset":
                 self.dcs_mode.set("off")
 
-        self._refresh_tone_status()
+        # If a preset tone was automatically applied, ensure the opposite
+        # signalling mode stays disabled to avoid conflicting defaults.
+        if self.ctcss_mode.get() != "off" and self.dcs_mode.get() != "off":
+            if ctcss_available:
+                self.dcs_mode.set("off")
+            else:
+                self.ctcss_mode.set("off")
 
     def _on_ctcss_mode_change(self) -> None:
         if self.ctcss_mode.get() != "off" and self.dcs_mode.get() != "off":
@@ -379,6 +397,18 @@ class ChannelRow(ttk.Frame):
         self._refresh_tone_status()
 
     def _on_dcs_mode_change(self) -> None:
+        if self.dcs_mode.get() != "off" and self.ctcss_mode.get() != "off":
+            self.ctcss_mode.set("off")
+        self._refresh_tone_status()
+
+    def _on_ctcss_mode_change(self) -> None:
+        self._ctcss_user_override = True
+        if self.ctcss_mode.get() != "off" and self.dcs_mode.get() != "off":
+            self.dcs_mode.set("off")
+        self._refresh_tone_status()
+
+    def _on_dcs_mode_change(self) -> None:
+        self._dcs_user_override = True
         if self.dcs_mode.get() != "off" and self.ctcss_mode.get() != "off":
             self.ctcss_mode.set("off")
         self._refresh_tone_status()
