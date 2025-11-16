@@ -201,6 +201,59 @@ def test_ctcss_level_configurable():
     assert ctcss_source.amplitude == pytest.approx(0.48)
 
 
+def test_channel_description_includes_bandwidth():
+    multich = _import_module()
+
+    tx = multich.MultiNBFMTx(
+        device="hackrf",
+        center_freq=462.6e6,
+        file_groups=[[Path("ch1.wav")]],
+        offsets=[0.0],
+        deviation=3_000.0,
+        ctcss_tones=[67.0],
+    )
+
+    desc = tx.channels[0].describe()
+    assert desc["estimated_bandwidth"] == pytest.approx(2 * (3000 + 3400))
+
+
+def test_ctcss_deviation_translates_to_level():
+    multich = _import_module()
+
+    tx = multich.MultiNBFMTx(
+        device="hackrf",
+        center_freq=462.6e6,
+        file_groups=[[Path("ch1.wav")]],
+        offsets=[0.0],
+        deviation=5_000.0,
+        ctcss_tones=[136.5],
+        ctcss_deviation=750.0,
+    )
+
+    ctcss_source = tx.channels[0].ctcss_src
+    assert isinstance(ctcss_source, _DummySigSource)
+    assert ctcss_source.amplitude == pytest.approx(0.15)
+
+
+def test_configuration_summary_highlights_ctcss(capsys):
+    multich = _import_module()
+
+    tx = multich.MultiNBFMTx(
+        device="hackrf",
+        center_freq=462.6e6,
+        file_groups=[[Path("ch1.wav")]],
+        offsets=[0.0],
+        deviation=4_000.0,
+        ctcss_tones=[85.4],
+        ctcss_deviation=900.0,
+    )
+
+    tx.print_configuration_summary()
+    printed = capsys.readouterr().out
+    assert "CTCSS" in printed
+    assert "Estimated Carson BW" in printed
+
+
 def test_dcs_all_channels_supported():
     multich = _import_module()
 
@@ -224,3 +277,22 @@ def test_squelch_script_default_tone():
         args = squelch.parse_args()
 
     assert args.ctcss_tone == pytest.approx(67.0)
+
+
+def test_squelch_script_ctcss_deviation_argument():
+    squelch = _import_squelch_script()
+
+    with mock.patch.object(
+        sys,
+        "argv",
+        [
+            "ctcss",
+            "--fc",
+            "462600000",
+            "--ctcss-deviation",
+            "825",
+        ],
+    ):
+        args = squelch.parse_args()
+
+    assert args.ctcss_deviation == pytest.approx(825.0)
