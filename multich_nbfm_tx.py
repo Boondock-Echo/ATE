@@ -41,6 +41,12 @@ from gnuradio import analog, blocks, filter, gr
 from gnuradio.filter import firdes, window
 
 
+DEFAULT_GATE_OPEN_THRESHOLD = 0.015
+DEFAULT_GATE_CLOSE_THRESHOLD = 0.006
+DEFAULT_GATE_ATTACK_MS = 4.0
+DEFAULT_GATE_RELEASE_MS = 200.0
+
+
 class QueuedAudioSource(gr.sync_block):
     """Source block that streams a queue of audio files sequentially."""
 
@@ -507,6 +513,10 @@ class NBFMChannel(gr.hier_block2):
         ctcss_hz: Optional[float] = None,
         ctcss_level: float = 0.35,
         dcs_code: Optional[str] = None,
+        gate_open_threshold: float = DEFAULT_GATE_OPEN_THRESHOLD,
+        gate_close_threshold: Optional[float] = DEFAULT_GATE_CLOSE_THRESHOLD,
+        gate_attack_ms: float = DEFAULT_GATE_ATTACK_MS,
+        gate_release_ms: float = DEFAULT_GATE_RELEASE_MS,
     ):
         gr.hier_block2.__init__(
             self, "NBFMChannel",
@@ -525,6 +535,14 @@ class NBFMChannel(gr.hier_block2):
         self._ctcss_hz: Optional[float] = None
         self._ctcss_level: Optional[float] = None
         self._dcs_code: Optional[str] = str(dcs_code) if dcs_code is not None else None
+        self._gate_open_threshold = float(gate_open_threshold)
+        self._gate_close_threshold = (
+            float(gate_close_threshold)
+            if gate_close_threshold is not None
+            else None
+        )
+        self._gate_attack_ms = float(gate_attack_ms)
+        self._gate_release_ms = float(gate_release_ms)
 
         # --- Blocks ---
         # Source (float, 48k mono). Audio source outputs floats in [-1,1].
@@ -546,7 +564,13 @@ class NBFMChannel(gr.hier_block2):
         )
 
         self.connect(self.src, self.program_gain, self.a_lpf)
-        self.audio_gate = AudioActivityGate(audio_sr)
+        self.audio_gate = AudioActivityGate(
+            audio_sr,
+            open_threshold=self._gate_open_threshold,
+            close_threshold=self._gate_close_threshold,
+            attack_ms=self._gate_attack_ms,
+            release_ms=self._gate_release_ms,
+        )
         self.connect(self.a_lpf, self.audio_gate)
 
         mix_sources: List[gr.basic_block] = [self.a_lpf]
@@ -691,6 +715,14 @@ class NBFMChannel(gr.hier_block2):
             "baseband_lpf_cutoff": self._baseband_lpf_cutoff,
             "estimated_bandwidth": estimated_bw,
             "dcs_code": self._dcs_code,
+            "gate_open_threshold": self._gate_open_threshold,
+            "gate_close_threshold": (
+                self._gate_close_threshold
+                if self._gate_close_threshold is not None
+                else self._gate_open_threshold * 0.5
+            ),
+            "gate_attack_ms": self._gate_attack_ms,
+            "gate_release_ms": self._gate_release_ms,
         }
 
 class MultiNBFMTx(gr.top_block):
@@ -712,6 +744,10 @@ class MultiNBFMTx(gr.top_block):
         ctcss_level: float = 0.35,
         ctcss_deviation: Optional[float] = None,
         dcs_codes: Optional[Sequence[Optional[str]]] = None,
+        gate_open_threshold: float = DEFAULT_GATE_OPEN_THRESHOLD,
+        gate_close_threshold: Optional[float] = DEFAULT_GATE_CLOSE_THRESHOLD,
+        gate_attack_ms: float = DEFAULT_GATE_ATTACK_MS,
+        gate_release_ms: float = DEFAULT_GATE_RELEASE_MS,
     ):
         gr.top_block.__init__(self, "MultiNBFM TX")
 
@@ -723,6 +759,14 @@ class MultiNBFMTx(gr.top_block):
         self._mod_sr = float(mod_sr)
         self._audio_sr = float(audio_sr) if audio_sr is not None else None
         self._master_scale = float(master_scale)
+        self._gate_open_threshold = float(gate_open_threshold)
+        self._gate_close_threshold = (
+            float(gate_close_threshold)
+            if gate_close_threshold is not None
+            else None
+        )
+        self._gate_attack_ms = float(gate_attack_ms)
+        self._gate_release_ms = float(gate_release_ms)
 
         if len(file_groups) != len(offsets):
             raise ValueError("The number of file queues must match the number of offsets")
@@ -794,6 +838,10 @@ class MultiNBFMTx(gr.top_block):
                 ctcss_hz=ctcss,
                 ctcss_level=self._ctcss_level,
                 dcs_code=dcs,
+                gate_open_threshold=self._gate_open_threshold,
+                gate_close_threshold=self._gate_close_threshold,
+                gate_attack_ms=self._gate_attack_ms,
+                gate_release_ms=self._gate_release_ms,
             )
             self.channels.append(ch)
 
@@ -867,6 +915,16 @@ class MultiNBFMTx(gr.top_block):
         )
         lines.append(
             f"  mod_sr={self._mod_sr/1e3:.1f} ksps deviation=±{self._deviation:.0f} Hz master_scale={self._master_scale:.2f}"
+        )
+        close = (
+            self._gate_close_threshold
+            if self._gate_close_threshold is not None
+            else self._gate_open_threshold * 0.5
+        )
+        lines.append(
+            "  Audio gate: "
+            f"open≥{self._gate_open_threshold:.4f} close≤{close:.4f} "
+            f"attack={self._gate_attack_ms:.1f} ms release={self._gate_release_ms:.1f} ms"
         )
 
         for idx, channel in enumerate(self.channels, start=1):
@@ -1011,6 +1069,36 @@ def parse_args():
         help="Composite amplitude scale (safety)",
     )
     p.add_argument(
+        "--gate-open",
+        type=float,
+        default=DEFAULT_GATE_OPEN_THRESHOLD,
+        help=(
+            "Audio gate open threshold (absolute amplitude). "
+            "Values near 0.015 work well for normalized voice content."
+        ),
+    )
+    p.add_argument(
+        "--gate-close",
+        type=float,
+        default=DEFAULT_GATE_CLOSE_THRESHOLD,
+        help=(
+            "Audio gate close threshold. Use a value slightly lower than --gate-open "
+            "to prevent chatter; defaults to 0.006."
+        ),
+    )
+    p.add_argument(
+        "--gate-attack-ms",
+        type=float,
+        default=DEFAULT_GATE_ATTACK_MS,
+        help="Audio gate attack time in milliseconds.",
+    )
+    p.add_argument(
+        "--gate-release-ms",
+        type=float,
+        default=DEFAULT_GATE_RELEASE_MS,
+        help="Audio gate release time in milliseconds.",
+    )
+    p.add_argument(
         "--loop-queue",
         dest="loop_queue",
         action="store_true",
@@ -1096,6 +1184,16 @@ def parse_args():
         p.error("--ctcss-level must be positive")
     if args.ctcss_deviation is not None and args.ctcss_deviation <= 0:
         p.error("--ctcss-deviation must be positive")
+    if args.gate_open <= 0:
+        p.error("--gate-open must be positive")
+    if args.gate_close is not None and args.gate_close <= 0:
+        p.error("--gate-close must be positive")
+    if args.gate_close is not None and args.gate_close >= args.gate_open:
+        p.error("--gate-close must be lower than --gate-open")
+    if args.gate_attack_ms < 0:
+        p.error("--gate-attack-ms must be non-negative")
+    if args.gate_release_ms < 0:
+        p.error("--gate-release-ms must be non-negative")
 
     return args
 
@@ -1118,6 +1216,10 @@ if __name__ == "__main__":
         ctcss_level=args.ctcss_level,
         ctcss_deviation=args.ctcss_deviation,
         dcs_codes=args.dcs_codes,
+        gate_open_threshold=args.gate_open,
+        gate_close_threshold=args.gate_close,
+        gate_attack_ms=args.gate_attack_ms,
+        gate_release_ms=args.gate_release_ms,
     )
     tb.print_configuration_summary()
     try:
