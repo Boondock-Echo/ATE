@@ -174,56 +174,6 @@ class ChannelRow(ttk.Frame):
         self.header.config(text=f"Channel {index}")
 
 
-class CollapsibleSection(ttk.Frame):
-    """A simple collapsible container with a toggle button header."""
-
-    def __init__(self, master, title: str, *, collapsed: bool = False):
-        super().__init__(master)
-        self._title = title
-        self._collapsed = bool(collapsed)
-
-        self.columnconfigure(0, weight=1)
-
-        header = ttk.Frame(self)
-        header.grid(row=0, column=0, sticky="we")
-
-        self._toggle_btn = ttk.Button(
-            header,
-            command=self.toggle,
-            style="Toolbutton",
-            padding=2,
-        )
-        self._toggle_btn.grid(row=0, column=0, sticky="w")
-
-        self._title_label = ttk.Label(header, text=title, font=("", 11, "bold"))
-        self._title_label.grid(row=0, column=1, sticky="w", padx=(4, 0))
-
-        header.columnconfigure(1, weight=1)
-
-        self.content_frame = ttk.Frame(self)
-        self.content_frame.grid(row=1, column=0, sticky="we")
-        if collapsed:
-            self.content_frame.grid_remove()
-
-        self._refresh_toggle_text()
-
-    def set_title(self, title: str) -> None:
-        self._title = title
-        self._title_label.config(text=title)
-        self._refresh_toggle_text()
-
-    def toggle(self) -> None:
-        self._collapsed = not self._collapsed
-        if self._collapsed:
-            self.content_frame.grid_remove()
-        else:
-            self.content_frame.grid(row=1, column=0, sticky="we")
-        self._refresh_toggle_text()
-
-    def _refresh_toggle_text(self) -> None:
-        symbol = "►" if self._collapsed else "▼"
-        self._toggle_btn.config(text=symbol)
-
     def get_frequency(self) -> float:
         label = self.preset_var.get().strip()
         if not label:
@@ -315,6 +265,57 @@ class CollapsibleSection(ttk.Frame):
         if self.dcs_var.get() and self.ctcss_var.get():
             self.ctcss_var.set(False)
         self._refresh_tone_status()
+
+
+class CollapsibleSection(ttk.Frame):
+    """A simple collapsible container with a toggle button header."""
+
+    def __init__(self, master, title: str, *, collapsed: bool = False):
+        super().__init__(master)
+        self._title = title
+        self._collapsed = bool(collapsed)
+
+        self.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(self)
+        header.grid(row=0, column=0, sticky="we")
+
+        self._toggle_btn = ttk.Button(
+            header,
+            command=self.toggle,
+            style="Toolbutton",
+            padding=2,
+        )
+        self._toggle_btn.grid(row=0, column=0, sticky="w")
+
+        self._title_label = ttk.Label(header, text=title, font=("", 11, "bold"))
+        self._title_label.grid(row=0, column=1, sticky="w", padx=(4, 0))
+
+        header.columnconfigure(1, weight=1)
+
+        self.content_frame = ttk.Frame(self)
+        self.content_frame.grid(row=1, column=0, sticky="we")
+        if collapsed:
+            self.content_frame.grid_remove()
+
+        self._refresh_toggle_text()
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self._title_label.config(text=title)
+        self._refresh_toggle_text()
+
+    def toggle(self) -> None:
+        self._collapsed = not self._collapsed
+        if self._collapsed:
+            self.content_frame.grid_remove()
+        else:
+            self.content_frame.grid(row=1, column=0, sticky="we")
+        self._refresh_toggle_text()
+
+    def _refresh_toggle_text(self) -> None:
+        symbol = "►" if self._collapsed else "▼"
+        self._toggle_btn.config(text=symbol)
 
 
 class MultiChannelApp(tk.Tk):
