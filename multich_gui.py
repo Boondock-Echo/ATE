@@ -392,16 +392,6 @@ class ChannelRow(ttk.Frame):
                 self.ctcss_mode.set("off")
 
     def _on_ctcss_mode_change(self) -> None:
-        if self.ctcss_mode.get() != "off" and self.dcs_mode.get() != "off":
-            self.dcs_mode.set("off")
-        self._refresh_tone_status()
-
-    def _on_dcs_mode_change(self) -> None:
-        if self.dcs_mode.get() != "off" and self.ctcss_mode.get() != "off":
-            self.ctcss_mode.set("off")
-        self._refresh_tone_status()
-
-    def _on_ctcss_mode_change(self) -> None:
         self._ctcss_user_override = True
         if self.ctcss_mode.get() != "off" and self.dcs_mode.get() != "off":
             self.dcs_mode.set("off")
