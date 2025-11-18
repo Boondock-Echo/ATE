@@ -2,13 +2,17 @@
 """Lightweight GUI wrapper for the multi-channel NBFM transmitter."""
 
 import argparse
+import contextlib
 import csv
+import json
 import threading
+import time
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Dict, List, Optional
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Dict, List, Optional, Sequence
+import wave
 
 from multich_nbfm_tx import (
     DEFAULT_GATE_ATTACK_MS,
@@ -38,10 +42,23 @@ class ChannelPreset:
     dcs_code: Optional[str] = None
 
 
+@dataclass
+class PlaylistEntry:
+    path: Path
+    duration: Optional[float] = None
+    sample_rate: Optional[int] = None
+
+
 def load_channel_presets() -> List[ChannelPreset]:
     """Load channel presets from the packaged CSV file."""
 
     presets_path = Path(__file__).with_name("channel_presets.csv")
+    return load_presets_from_csv(presets_path)
+
+
+def load_presets_from_csv(presets_path: Path) -> List[ChannelPreset]:
+    """Read channel presets from a CSV file at an arbitrary location."""
+
     if not presets_path.exists():
         raise FileNotFoundError(
             f"Missing preset file: {presets_path}. Ensure it is packaged with the GUI."
@@ -88,15 +105,66 @@ def load_channel_presets() -> List[ChannelPreset]:
     return presets
 
 
+def presets_to_rows(presets: Sequence[ChannelPreset]) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for preset in presets:
+        rows.append(
+            {
+                "channel_id": preset.key,
+                "display_name": preset.label,
+                "frequency_hz": f"{preset.frequency_hz}",
+                "ctcss_hz": "" if preset.ctcss_hz is None else f"{preset.ctcss_hz}",
+                "dcs_code": preset.dcs_code or "",
+            }
+        )
+    return rows
+
+
+def save_presets_to_csv(presets: Sequence[ChannelPreset], path: Path) -> None:
+    rows = presets_to_rows(presets)
+    with path.open("w", newline="", encoding="utf-8") as csvfile:
+        fieldnames = ["channel_id", "display_name", "frequency_hz", "ctcss_hz", "dcs_code"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def rows_to_presets(rows: Sequence[Dict[str, str]]) -> List[ChannelPreset]:
+    presets: List[ChannelPreset] = []
+    for row in rows:
+        try:
+            label = row.get("display_name") or row.get("channel_id")
+            freq_text = row.get("frequency_hz")
+            if label is None or freq_text is None:
+                continue
+            frequency = float(freq_text)
+            ctcss_text = row.get("ctcss_hz") or ""
+            ctcss = float(ctcss_text) if ctcss_text else None
+            dcs_code = row.get("dcs_code") or None
+        except (ValueError, TypeError):
+            continue
+        key = row.get("channel_id") or str(label)
+        presets.append(
+            ChannelPreset(
+                key=str(key),
+                label=str(label),
+                frequency_hz=frequency,
+                ctcss_hz=ctcss,
+                dcs_code=dcs_code,
+            )
+        )
+    return presets
+
+
 class ChannelRow(ttk.Frame):
     """Widget that captures per-channel configuration."""
 
-    def __init__(self, master, presets: List[ChannelPreset], remove_callback):
+    def __init__(self, master, presets: List[ChannelPreset], controller):
         super().__init__(master, style="ChannelRow.TFrame", padding=8)
-        self.remove_callback = remove_callback
+        self.controller = controller
         self.preset_var = tk.StringVar()
         self.gain_var = tk.StringVar(value="1.0")
-        self.files: List[Path] = []
+        self.playlist: List[PlaylistEntry] = []
         self._labels = [preset.label for preset in presets]
         self._preset_map: Dict[str, ChannelPreset] = {
             preset.label: preset for preset in presets
@@ -210,18 +278,31 @@ class ChannelRow(ttk.Frame):
         playlist_frame.grid(
             row=7, column=0, columnspan=2, padx=4, pady=2, sticky="nsew"
         )
-        self.file_listbox = tk.Listbox(
+        columns = ("duration", "rate")
+        self.file_listbox = ttk.Treeview(
             playlist_frame,
-            height=5,
-            width=45,
-            exportselection=False,
-            selectmode=tk.BROWSE,
+            columns=columns,
+            show="tree headings",
+            selectmode="browse",
+            height=6,
         )
+        self.file_listbox.heading("#0", text="File")
+        self.file_listbox.heading("duration", text="Duration (s)")
+        self.file_listbox.heading("rate", text="Sample Rate")
+        self.file_listbox.column("#0", width=220, stretch=True)
+        self.file_listbox.column("duration", width=110, anchor="center")
+        self.file_listbox.column("rate", width=110, anchor="center")
         self.file_listbox.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(playlist_frame, orient="vertical", command=self.file_listbox.yview)
+        scrollbar = ttk.Scrollbar(
+            playlist_frame, orient="vertical", command=self.file_listbox.yview
+        )
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.file_listbox.configure(yscrollcommand=scrollbar.set)
         playlist_frame.columnconfigure(0, weight=1)
+
+        self.playlist_summary_var = tk.StringVar(value="No files queued")
+        summary_label = ttk.Label(self, textvariable=self.playlist_summary_var, font=("", 9))
+        summary_label.grid(row=8, column=0, columnspan=2, padx=4, pady=(0, 4), sticky="w")
 
         controls = ttk.Frame(self)
         controls.grid(row=7, column=2, rowspan=1, padx=4, pady=2, sticky="n")
@@ -239,12 +320,22 @@ class ChannelRow(ttk.Frame):
             row=3, column=0, pady=2, sticky="we"
         )
 
-        remove_btn = ttk.Button(self, text="Remove Channel", command=self.remove)
-        remove_btn.grid(row=8, column=2, padx=4, pady=4, sticky="e")
+        channel_controls = ttk.Frame(self)
+        channel_controls.grid(row=9, column=0, columnspan=3, padx=4, pady=4, sticky="e")
+        ttk.Button(channel_controls, text="Duplicate", command=self.duplicate_channel).grid(
+            row=0, column=0, padx=2
+        )
+        ttk.Button(channel_controls, text="Move ▲", command=lambda: self.move_channel(-1)).grid(
+            row=0, column=1, padx=2
+        )
+        ttk.Button(channel_controls, text="Move ▼", command=lambda: self.move_channel(1)).grid(
+            row=0, column=2, padx=2
+        )
+        ttk.Button(channel_controls, text="Remove", command=self.remove).grid(row=0, column=3, padx=2)
 
         self.error_var = tk.StringVar(value="")
         self.error_label = ttk.Label(self, textvariable=self.error_var, foreground="#a40000")
-        self.error_label.grid(row=8, column=0, columnspan=2, padx=4, pady=2, sticky="w")
+        self.error_label.grid(row=10, column=0, columnspan=2, padx=4, pady=2, sticky="w")
 
         self.channel_combo.bind("<<ComboboxSelected>>", self._on_preset_changed)
         self._update_tone_controls()
@@ -311,39 +402,74 @@ class ChannelRow(ttk.Frame):
             ],
         )
         if filenames:
-            self.files.extend(Path(name).expanduser() for name in filenames)
+            for name in filenames:
+                path = Path(name).expanduser()
+                self.playlist.append(self._create_entry(path))
             self._refresh_playlist()
 
     def remove_selected_files(self) -> None:
         self.clear_error()
-        selections = sorted(self.file_listbox.curselection(), reverse=True)
-        for idx in selections:
-            if 0 <= idx < len(self.files):
-                self.files.pop(idx)
+        selections = self.file_listbox.selection()
+        if not selections:
+            return
+        indices = sorted([self.file_listbox.index(item) for item in selections], reverse=True)
+        for idx in indices:
+            if 0 <= idx < len(self.playlist):
+                self.playlist.pop(idx)
         self._refresh_playlist()
 
     def move_selected(self, direction: int) -> None:
         if direction not in (-1, 1):
             return
         self.clear_error()
-        selection = self.file_listbox.curselection()
+        selection = self.file_listbox.selection()
         if not selection:
             return
-        index = selection[0]
+        index = self.file_listbox.index(selection[0])
         new_index = index + direction
-        if not (0 <= new_index < len(self.files)):
+        if not (0 <= new_index < len(self.playlist)):
             return
-        self.files[index], self.files[new_index] = self.files[new_index], self.files[index]
+        self.playlist[index], self.playlist[new_index] = (
+            self.playlist[new_index],
+            self.playlist[index],
+        )
         self._refresh_playlist()
-        self.file_listbox.selection_set(new_index)
+        item_id = self.file_listbox.get_children()[new_index]
+        self.file_listbox.selection_set(item_id)
 
     def _refresh_playlist(self) -> None:
-        self.file_listbox.delete(0, tk.END)
-        for path in self.files:
-            self.file_listbox.insert(tk.END, path.name)
+        for item in self.file_listbox.get_children():
+            self.file_listbox.delete(item)
+        total_duration = 0.0
+        for entry in self.playlist:
+            duration_text = "–"
+            rate_text = "–"
+            if entry.duration is not None:
+                total_duration += entry.duration
+                duration_text = f"{entry.duration:.2f}"
+            if entry.sample_rate is not None:
+                rate_text = f"{entry.sample_rate:,d} Hz"
+            self.file_listbox.insert(
+                "",
+                tk.END,
+                text=entry.path.name,
+                values=(duration_text, rate_text),
+            )
+        if self.playlist:
+            self.playlist_summary_var.set(
+                f"{len(self.playlist)} file(s) • Total duration: {total_duration:.2f}s"
+            )
+        else:
+            self.playlist_summary_var.set("No files queued")
 
     def remove(self) -> None:
-        self.remove_callback(self)
+        self.controller.remove_channel(self)
+
+    def duplicate_channel(self) -> None:
+        self.controller.duplicate_channel(self)
+
+    def move_channel(self, direction: int) -> None:
+        self.controller.move_channel(self, direction)
 
     def _on_preset_changed(self, _event=None) -> None:
         self.clear_error()
@@ -352,6 +478,24 @@ class ChannelRow(ttk.Frame):
         self.ctcss_custom_var.set("")
         self.dcs_custom_var.set("")
         self._update_tone_controls()
+
+    def _create_entry(self, path: Path) -> PlaylistEntry:
+        duration: Optional[float] = None
+        sample_rate: Optional[int] = None
+        if path.suffix.lower() == ".wav":
+            try:
+                with contextlib.closing(wave.open(str(path), "rb")) as wav_file:
+                    frames = wav_file.getnframes()
+                    rate = wav_file.getframerate()
+                    sample_rate = rate
+                    duration = frames / rate if rate else None
+            except Exception:
+                duration = None
+                sample_rate = None
+        return PlaylistEntry(path=path, duration=duration, sample_rate=sample_rate)
+
+    def get_playlist_paths(self) -> List[Path]:
+        return [entry.path for entry in self.playlist]
 
     def _update_tone_controls(self) -> None:
         label = self.preset_var.get().strip()
@@ -440,6 +584,296 @@ class ChannelRow(ttk.Frame):
         self.error_var.set(message)
         self.configure(style=self._error_style)
 
+    def update_presets(self, presets: List[ChannelPreset]) -> None:
+        """Refresh the available preset list while preserving the selection when possible."""
+
+        current_label = self.preset_var.get()
+        self._labels = [preset.label for preset in presets]
+        self._preset_map = {preset.label: preset for preset in presets}
+        self.channel_combo.configure(values=self._labels)
+        if current_label in self._preset_map:
+            self.preset_var.set(current_label)
+        elif self._labels:
+            self.preset_var.set(self._labels[0])
+        else:
+            self.preset_var.set("")
+        self._update_tone_controls()
+
+    def set_playlist(self, paths: Sequence[Path]) -> None:
+        self.playlist = [self._create_entry(path) for path in paths]
+        self._refresh_playlist()
+
+    def serialize_state(self) -> Dict[str, object]:
+        return {
+            "preset_label": self.preset_var.get(),
+            "gain": self.gain_var.get(),
+            "ctcss_mode": self.ctcss_mode.get(),
+            "ctcss_custom": self.ctcss_custom_var.get(),
+            "dcs_mode": self.dcs_mode.get(),
+            "dcs_custom": self.dcs_custom_var.get(),
+            "playlist": [str(entry.path) for entry in self.playlist],
+        }
+
+    def apply_state(self, data: Dict[str, object]) -> None:
+        preset_label = data.get("preset_label")
+        if preset_label and preset_label in self._preset_map:
+            self.preset_var.set(preset_label)
+        elif self._labels:
+            self.preset_var.set(self._labels[0])
+        self.gain_var.set(data.get("gain", "1.0"))
+        self.ctcss_mode.set(data.get("ctcss_mode", "off"))
+        self.ctcss_custom_var.set(data.get("ctcss_custom", ""))
+        self.dcs_mode.set(data.get("dcs_mode", "off"))
+        self.dcs_custom_var.set(data.get("dcs_custom", ""))
+        playlist_paths = [Path(p) for p in data.get("playlist", [])]
+        self.set_playlist(playlist_paths)
+        self._refresh_tone_status()
+
+
+class PresetEditorDialog(simpledialog.Dialog):
+    """Modal dialog that edits/creates a preset entry."""
+
+    def __init__(self, master, *, existing_keys: Sequence[str], preset: Optional[ChannelPreset] = None):
+        self._existing_keys = {key for key in existing_keys}
+        self._preset = preset
+        if preset is not None:
+            self._existing_keys.discard(preset.key)
+        self.result: Optional[ChannelPreset] = None
+        super().__init__(master, title="Edit Preset" if preset else "Add Preset")
+
+    def body(self, master):
+        ttk.Label(master, text="Channel ID:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
+        ttk.Label(master, text="Display Name:").grid(row=1, column=0, sticky="w", padx=4, pady=4)
+        ttk.Label(master, text="Frequency (Hz):").grid(row=2, column=0, sticky="w", padx=4, pady=4)
+        ttk.Label(master, text="CTCSS (Hz):").grid(row=3, column=0, sticky="w", padx=4, pady=4)
+        ttk.Label(master, text="DCS Code:").grid(row=4, column=0, sticky="w", padx=4, pady=4)
+
+        self.key_var = tk.StringVar(value=self._preset.key if self._preset else "")
+        self.label_var = tk.StringVar(value=self._preset.label if self._preset else "")
+        self.freq_var = tk.StringVar(
+            value=f"{self._preset.frequency_hz}" if self._preset else ""
+        )
+        self.ctcss_var = tk.StringVar(
+            value="" if not self._preset or self._preset.ctcss_hz is None else f"{self._preset.ctcss_hz}"
+        )
+        self.dcs_var = tk.StringVar(value=self._preset.dcs_code if self._preset else "")
+
+        self.key_entry = ttk.Entry(master, textvariable=self.key_var, width=30)
+        self.key_entry.grid(row=0, column=1, padx=4, pady=4)
+        self.label_entry = ttk.Entry(master, textvariable=self.label_var, width=30)
+        self.label_entry.grid(row=1, column=1, padx=4, pady=4)
+        self.freq_entry = ttk.Entry(master, textvariable=self.freq_var, width=30)
+        self.freq_entry.grid(row=2, column=1, padx=4, pady=4)
+        self.ctcss_entry = ttk.Entry(master, textvariable=self.ctcss_var, width=30)
+        self.ctcss_entry.grid(row=3, column=1, padx=4, pady=4)
+        self.dcs_entry = ttk.Entry(master, textvariable=self.dcs_var, width=30)
+        self.dcs_entry.grid(row=4, column=1, padx=4, pady=4)
+
+        self.label_var.trace_add("write", self._suggest_key)
+        return self.label_entry
+
+    def validate(self) -> bool:  # pragma: no cover - modal UI
+        label = self.label_var.get().strip()
+        key = self.key_var.get().strip() or label
+        if not label:
+            messagebox.showerror("Missing information", "Display name is required.", parent=self)
+            return False
+        if not key:
+            messagebox.showerror("Missing information", "Channel ID is required.", parent=self)
+            return False
+        freq_text = self.freq_var.get().strip()
+        try:
+            freq = float(freq_text)
+        except ValueError:
+            messagebox.showerror("Invalid frequency", "Frequency must be numeric.", parent=self)
+            return False
+        if freq <= 0:
+            messagebox.showerror(
+                "Invalid frequency", "Frequency must be positive.", parent=self
+            )
+            return False
+        ctcss_text = self.ctcss_var.get().strip()
+        ctcss = None
+        if ctcss_text:
+            try:
+                ctcss = float(ctcss_text)
+            except ValueError:
+                messagebox.showerror(
+                    "Invalid CTCSS", "CTCSS tone must be numeric.", parent=self
+                )
+                return False
+        dcs = self.dcs_var.get().strip() or None
+        if key in self._existing_keys:
+            messagebox.showerror("Duplicate ID", "Channel ID already exists.", parent=self)
+            return False
+        self.result = ChannelPreset(key=key, label=label, frequency_hz=freq, ctcss_hz=ctcss, dcs_code=dcs)
+        return True
+
+    def apply(self):  # pragma: no cover - modal UI
+        pass
+
+    def _suggest_key(self, *_):
+        if self._preset:
+            return
+        if self.key_var.get().strip():
+            return
+        label = self.label_var.get().strip()
+        if not label:
+            return
+        sanitized = "".join(ch for ch in label if ch.isalnum() or ch in ("_", "-"))
+        sanitized = sanitized or label.replace(" ", "_")
+        self.key_var.set(sanitized)
+
+
+class PresetManagerDialog(tk.Toplevel):
+    """Dialog that lets the operator manage preset CSV entries."""
+
+    def __init__(self, master, presets: Sequence[ChannelPreset]):
+        super().__init__(master)
+        self.title("Preset Manager")
+        self.transient(master)
+        self.resizable(True, True)
+        self.presets: List[ChannelPreset] = list(presets)
+        self.result: Optional[List[ChannelPreset]] = None
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        ttk.Label(self, text="Available presets").grid(row=0, column=0, padx=10, pady=(10, 0), sticky="w")
+        columns = ("label", "frequency", "ctcss", "dcs")
+        self.tree = ttk.Treeview(
+            self,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=12,
+        )
+        self.tree.heading("label", text="Display Name")
+        self.tree.heading("frequency", text="Frequency (Hz)")
+        self.tree.heading("ctcss", text="CTCSS")
+        self.tree.heading("dcs", text="DCS")
+        self.tree.column("label", width=220)
+        self.tree.column("frequency", width=120, anchor="center")
+        self.tree.column("ctcss", width=100, anchor="center")
+        self.tree.column("dcs", width=80, anchor="center")
+        self.tree.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns", pady=5)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=5, sticky="e")
+        ttk.Button(btn_frame, text="Add", command=self.add_preset).grid(row=0, column=0, padx=4)
+        ttk.Button(btn_frame, text="Edit", command=self.edit_selected).grid(row=0, column=1, padx=4)
+        ttk.Button(btn_frame, text="Delete", command=self.delete_selected).grid(row=0, column=2, padx=4)
+        ttk.Button(btn_frame, text="Import…", command=self.import_presets).grid(row=0, column=3, padx=4)
+        ttk.Button(btn_frame, text="Export…", command=self.export_presets).grid(row=0, column=4, padx=4)
+
+        action_frame = ttk.Frame(self)
+        action_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="e")
+        ttk.Button(action_frame, text="Save Changes", command=self.save_changes).grid(row=0, column=0, padx=4)
+        ttk.Button(action_frame, text="Cancel", command=self._on_cancel).grid(row=0, column=1, padx=4)
+
+        self.status_var = tk.StringVar(value="")
+        ttk.Label(self, textvariable=self.status_var, font=("", 9, "italic")).grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 10)
+        )
+
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self._refresh_tree()
+        self.grab_set()
+
+    def _refresh_tree(self) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for preset in self.presets:
+            ctcss = "–" if preset.ctcss_hz is None else f"{preset.ctcss_hz:g}"
+            dcs = preset.dcs_code or "–"
+            self.tree.insert(
+                "",
+                tk.END,
+                values=(preset.label, f"{preset.frequency_hz:g}", ctcss, dcs),
+            )
+
+    def _selected_index(self) -> Optional[int]:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        return self.tree.index(selection[0])
+
+    def add_preset(self):  # pragma: no cover - modal UI
+        dialog = PresetEditorDialog(self, existing_keys=[preset.key for preset in self.presets])
+        if dialog.result is not None:
+            self.presets.append(dialog.result)
+            self._refresh_tree()
+            self.status_var.set(f"Added preset '{dialog.result.label}'.")
+
+    def edit_selected(self):  # pragma: no cover - modal UI
+        idx = self._selected_index()
+        if idx is None:
+            return
+        dialog = PresetEditorDialog(
+            self,
+            existing_keys=[preset.key for preset in self.presets],
+            preset=self.presets[idx],
+        )
+        if dialog.result is not None:
+            self.presets[idx] = dialog.result
+            self._refresh_tree()
+            self.status_var.set(f"Updated preset '{dialog.result.label}'.")
+
+    def delete_selected(self):  # pragma: no cover - modal UI
+        idx = self._selected_index()
+        if idx is None:
+            return
+        preset = self.presets.pop(idx)
+        self._refresh_tree()
+        self.status_var.set(f"Deleted preset '{preset.label}'.")
+
+    def import_presets(self):  # pragma: no cover - modal UI
+        filename = filedialog.askopenfilename(
+            parent=self,
+            title="Import preset CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not filename:
+            return
+        try:
+            imported = load_presets_from_csv(Path(filename))
+        except Exception as exc:
+            messagebox.showerror("Import failed", str(exc), parent=self)
+            return
+        self.presets = list(imported)
+        self._refresh_tree()
+        self.status_var.set(f"Loaded {len(imported)} presets from {Path(filename).name}.")
+
+    def export_presets(self):  # pragma: no cover - modal UI
+        if not self.presets:
+            messagebox.showinfo("No presets", "There are no presets to export.", parent=self)
+            return
+        filename = filedialog.asksaveasfilename(
+            parent=self,
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export presets",
+        )
+        if not filename:
+            return
+        try:
+            save_presets_to_csv(self.presets, Path(filename))
+        except Exception as exc:
+            messagebox.showerror("Export failed", str(exc), parent=self)
+            return
+        self.status_var.set(f"Exported {len(self.presets)} presets to {Path(filename).name}.")
+
+    def save_changes(self):  # pragma: no cover - modal UI
+        self.result = list(self.presets)
+        self.destroy()
+
+    def _on_cancel(self):  # pragma: no cover - modal UI
+        self.result = None
+        self.destroy()
 
 class ChannelValidationError(ValueError):
     """Raised when a specific channel row fails validation."""
@@ -561,10 +995,31 @@ class MultiChannelApp(tk.Tk):
         self._setting_errors: Dict[str, str] = {}
         self._setting_error_sources: Dict[str, str] = {}
         self.settings_status_var = tk.StringVar(value="All transmitter settings look valid.")
+        self.log_messages: List[str] = []
+        self.session_path: Optional[Path] = None
 
+        self._build_menu()
         self._build_layout()
         self.add_channel()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._log("Application initialized.")
+
+    def _build_menu(self) -> None:
+        menubar = tk.Menu(self)
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="Save Session…", command=self.save_session)
+        file_menu.add_command(label="Load Session…", command=self.load_session)
+        file_menu.add_separator()
+        file_menu.add_command(label="Quit", command=self.on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        presets_menu = tk.Menu(menubar, tearoff=False)
+        presets_menu.add_command(label="Manage Presets…", command=self.open_preset_manager)
+        presets_menu.add_command(label="Import Presets…", command=self.import_presets_from_file)
+        presets_menu.add_command(label="Export Presets…", command=self.export_presets_to_file)
+        menubar.add_cascade(label="Presets", menu=presets_menu)
+
+        self.config(menu=menubar)
 
     def _build_layout(self) -> None:
         style = ttk.Style(self)
@@ -589,6 +1044,10 @@ class MultiChannelApp(tk.Tk):
             state="readonly",
         )
         device_combo.grid(row=0, column=1, sticky="we", **padding)
+
+        ttk.Button(main, text="Manage Presets…", command=self.open_preset_manager).grid(
+            row=0, column=2, sticky="e", **padding
+        )
 
         ttk.Checkbutton(
             main,
@@ -769,6 +1228,15 @@ class MultiChannelApp(tk.Tk):
             row=5, column=1, sticky="e", **padding
         )
 
+        session_controls = ttk.Frame(main)
+        session_controls.grid(row=5, column=2, sticky="e", **padding)
+        ttk.Button(session_controls, text="Save Session…", command=self.save_session).grid(
+            row=0, column=0, padx=4
+        )
+        ttk.Button(session_controls, text="Load Session…", command=self.load_session).grid(
+            row=0, column=1, padx=4
+        )
+
         button_frame = ttk.Frame(main)
         button_frame.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
         self.start_button = ttk.Button(button_frame, text="Start", command=self.start_transmission)
@@ -777,19 +1245,40 @@ class MultiChannelApp(tk.Tk):
             button_frame, text="Stop", command=self.stop_transmission, state="disabled"
         )
         self.stop_button.grid(row=0, column=1, padx=5)
+        self.tx_progress = ttk.Progressbar(button_frame, mode="indeterminate", length=180)
+        self.tx_progress.grid(row=0, column=2, padx=5)
+
+        ttk.Separator(main).grid(row=7, column=0, columnspan=3, sticky="we", pady=(10, 5))
+
+        log_section = ttk.LabelFrame(main, text="Transmission Log")
+        log_section.grid(row=8, column=0, columnspan=3, sticky="nsew", **padding)
+        log_section.columnconfigure(0, weight=1)
+        log_section.rowconfigure(0, weight=1)
+        self.log_text = tk.Text(log_section, height=10, wrap="word", state="disabled")
+        log_scroll = ttk.Scrollbar(log_section, orient="vertical", command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        log_scroll.grid(row=0, column=1, sticky="ns")
 
         main.columnconfigure(1, weight=1)
-        main.rowconfigure(4, weight=1)
+        main.columnconfigure(0, weight=0)
+        main.columnconfigure(2, weight=0)
+        main.rowconfigure(4, weight=2)
+        main.rowconfigure(8, weight=1)
 
-    def add_channel(self) -> None:
+    def add_channel(self, state: Optional[Dict[str, str]] = None) -> ChannelRow:
         section = CollapsibleSection(self.channels_container, title="")
         section.grid(row=len(self.channel_rows), column=0, sticky="we", pady=4)
-        row = ChannelRow(section.content_frame, self.presets, self.remove_channel)
+        row = ChannelRow(section.content_frame, self.presets, controller=self)
         row.grid(row=0, column=0, sticky="we")
         self.channel_rows.append(row)
         self._channel_sections[row] = section
         self.channels_container.columnconfigure(0, weight=1)
-        self._refresh_channel_indices()
+        if state:
+            row.apply_state(state)
+        self._refresh_channel_positions()
+        self._log(f"Added channel {len(self.channel_rows)}.")
+        return row
 
     def remove_channel(self, row: ChannelRow) -> None:
         if row in self.channel_rows:
@@ -802,7 +1291,56 @@ class MultiChannelApp(tk.Tk):
                 section.destroy()
             else:
                 row.destroy()
-            self._refresh_channel_indices()
+            self._refresh_channel_positions()
+            self._log("Removed a channel.")
+
+    def duplicate_channel(self, row: ChannelRow) -> None:
+        if row not in self.channel_rows:
+            return
+        state = row.serialize_state()
+        new_row = self.add_channel(state=state)
+        # Collapse duplicated section to reduce clutter
+        section = self._channel_sections.get(new_row)
+        if section:
+            section._collapsed = False
+            section.content_frame.grid(row=1, column=0, sticky="we")
+            section._refresh_toggle_text()
+        self._log("Duplicated channel configuration.")
+
+    def move_channel(self, row: ChannelRow, direction: int) -> None:
+        if row not in self.channel_rows or direction not in (-1, 1):
+            return
+        idx = self.channel_rows.index(row)
+        new_idx = idx + direction
+        if not (0 <= new_idx < len(self.channel_rows)):
+            return
+        self.channel_rows[idx], self.channel_rows[new_idx] = (
+            self.channel_rows[new_idx],
+            self.channel_rows[idx],
+        )
+        self._refresh_channel_positions()
+        self._log(f"Moved channel to position {new_idx + 1}.")
+
+    def _refresh_channel_positions(self) -> None:
+        for idx, channel in enumerate(self.channel_rows):
+            section = getattr(self, "_channel_sections", {}).get(channel)
+            if section is not None:
+                section.grid_configure(row=idx)
+        self._refresh_channel_indices()
+
+    def _clear_all_channels(self) -> None:
+        for row in list(self.channel_rows):
+            section = self._channel_sections.pop(row, None)
+            if section is not None:
+                section.destroy()
+            else:
+                row.destroy()
+        self.channel_rows.clear()
+        self._channel_sections.clear()
+
+    def _broadcast_preset_update(self) -> None:
+        for row in self.channel_rows:
+            row.update_presets(self.presets)
 
     def _refresh_channel_indices(self) -> None:
         for idx, channel in enumerate(self.channel_rows, start=1):
@@ -825,7 +1363,8 @@ class MultiChannelApp(tk.Tk):
         for idx, row in enumerate(self.channel_rows, start=1):
             try:
                 freq = row.get_frequency()
-                if not row.files:
+                files = row.get_playlist_paths()
+                if not files:
                     raise ValueError("Add at least one audio file to the playlist")
                 gain_str = row.gain_var.get().strip()
                 gain = float(gain_str) if gain_str else 1.0
@@ -843,7 +1382,7 @@ class MultiChannelApp(tk.Tk):
                     idx, "CTCSS and DCS cannot be enabled at the same time"
                 )
 
-            file_groups.append(list(row.files))
+            file_groups.append(list(files))
             freqs.append(freq)
             gains.append(gain)
             ctcss_tones.append(tone)
@@ -912,6 +1451,163 @@ class MultiChannelApp(tk.Tk):
         self._setting_errors[field_name] = message
         self._setting_error_sources[field_name] = source
         self._update_settings_status()
+
+    def open_preset_manager(self) -> None:
+        dialog = PresetManagerDialog(self, self.presets)
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self.presets = dialog.result
+            self._broadcast_preset_update()
+            self._log(f"Preset library updated ({len(self.presets)} entries).")
+
+    def import_presets_from_file(self) -> None:
+        filename = filedialog.askopenfilename(
+            title="Import preset CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not filename:
+            return
+        try:
+            presets = load_presets_from_csv(Path(filename))
+        except Exception as exc:
+            messagebox.showerror("Import failed", str(exc))
+            return
+        self.presets = presets
+        self._broadcast_preset_update()
+        self._log(f"Loaded presets from {Path(filename).name}.")
+
+    def export_presets_to_file(self) -> None:
+        if not self.presets:
+            messagebox.showinfo("No presets", "There are no presets to export.")
+            return
+        filename = filedialog.asksaveasfilename(
+            title="Export preset CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not filename:
+            return
+        try:
+            save_presets_to_csv(self.presets, Path(filename))
+        except Exception as exc:
+            messagebox.showerror("Export failed", str(exc))
+            return
+        self._log(f"Exported presets to {Path(filename).name}.")
+
+    def save_session(self) -> None:
+        filename = filedialog.asksaveasfilename(
+            title="Save session",
+            defaultextension=".json",
+            filetypes=[("Session files", "*.json"), ("All files", "*.*")],
+        )
+        if not filename:
+            return
+        data = self._serialize_session()
+        try:
+            with open(filename, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2)
+        except OSError as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return
+        self.session_path = Path(filename)
+        self._log(f"Saved session to {self.session_path.name}.")
+
+    def load_session(self) -> None:
+        filename = filedialog.askopenfilename(
+            title="Load session",
+            filetypes=[("Session files", "*.json"), ("All files", "*.*")],
+        )
+        if not filename:
+            return
+        try:
+            with open(filename, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except OSError as exc:
+            messagebox.showerror("Load failed", str(exc))
+            return
+        except json.JSONDecodeError as exc:
+            messagebox.showerror("Load failed", f"Invalid JSON: {exc}")
+            return
+        try:
+            self._apply_session(data)
+        except Exception as exc:
+            messagebox.showerror("Load failed", str(exc))
+            return
+        self.session_path = Path(filename)
+        self._log(f"Loaded session from {self.session_path.name}.")
+
+    def _serialize_session(self) -> Dict[str, object]:
+        return {
+            "version": 1,
+            "settings": self._gather_settings(),
+            "channels": [row.serialize_state() for row in self.channel_rows],
+            "presets": presets_to_rows(self.presets),
+        }
+
+    def _gather_settings(self) -> Dict[str, object]:
+        return {
+            "device": self.device_var.get(),
+            "loop": bool(self.loop_var.get()),
+            "tx_sr": self.tx_sr_var.get(),
+            "mod_sr": self.mod_sr_var.get(),
+            "deviation": self.deviation_var.get(),
+            "master_scale": self.master_scale_var.get(),
+            "ctcss_level": self.ctcss_level_var.get(),
+            "ctcss_deviation": self.ctcss_deviation_var.get(),
+            "tx_gain": self.tx_gain_var.get(),
+            "gate_open": self.gate_open_var.get(),
+            "gate_close": self.gate_close_var.get(),
+            "gate_attack": self.gate_attack_var.get(),
+            "gate_release": self.gate_release_var.get(),
+        }
+
+    def _apply_session(self, data: Dict[str, object]) -> None:
+        presets_data = data.get("presets")
+        if isinstance(presets_data, list):
+            loaded_presets = rows_to_presets(presets_data)
+            if loaded_presets:
+                self.presets = loaded_presets
+                self._broadcast_preset_update()
+        channels = data.get("channels")
+        if isinstance(channels, list) and channels:
+            self._clear_all_channels()
+            for channel_state in channels:
+                if isinstance(channel_state, dict):
+                    self.add_channel(channel_state)
+        else:
+            if not self.channel_rows:
+                self.add_channel()
+        settings = data.get("settings")
+        if isinstance(settings, dict):
+            self._apply_settings(settings)
+
+    def _apply_settings(self, settings: Dict[str, object]) -> None:
+        device = settings.get("device")
+        if isinstance(device, str):
+            self.device_var.set(device)
+        loop_value = settings.get("loop")
+        if loop_value is not None:
+            if isinstance(loop_value, str):
+                loop_bool = loop_value.lower() in {"1", "true", "yes", "on"}
+            else:
+                loop_bool = bool(loop_value)
+            self.loop_var.set(loop_bool)
+        for key, var in [
+            ("tx_sr", self.tx_sr_var),
+            ("mod_sr", self.mod_sr_var),
+            ("deviation", self.deviation_var),
+            ("master_scale", self.master_scale_var),
+            ("ctcss_level", self.ctcss_level_var),
+            ("ctcss_deviation", self.ctcss_deviation_var),
+            ("tx_gain", self.tx_gain_var),
+            ("gate_open", self.gate_open_var),
+            ("gate_close", self.gate_close_var),
+            ("gate_attack", self.gate_attack_var),
+            ("gate_release", self.gate_release_var),
+        ]:
+            value = settings.get(key)
+            if value is not None:
+                var.set(str(value))
 
     def _clear_setting_error(self, field_name: str) -> None:
         state = self._setting_states.get(field_name)
@@ -1118,6 +1814,8 @@ class MultiChannelApp(tk.Tk):
         self.status_var.set(f"Transmitting @ {center_freq/1e6:.4f} MHz")
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
+        self.tx_progress.start(60)
+        self._log(f"Transmission started @ {center_freq/1e6:.4f} MHz.")
 
         def _run():
             try:
@@ -1135,6 +1833,7 @@ class MultiChannelApp(tk.Tk):
         if not self.running or self.tb is None:
             return
         self.stop_button.config(state="disabled")
+        self._log("Stop requested.")
         try:
             self.tb.stop()
         except Exception as exc:  # pragma: no cover - UI feedback
@@ -1157,9 +1856,13 @@ class MultiChannelApp(tk.Tk):
         self.start_button.config(state="normal")
         self.stop_button.config(state="disabled")
         self.status_var.set("Idle")
+        self.tx_progress.stop()
         if self._run_error is not None:
             messagebox.showerror("Transmission error", str(self._run_error))
+            self._log(f"Transmission stopped with error: {self._run_error}")
             self._run_error = None
+        else:
+            self._log("Transmission finished.")
         self.tb = None
 
     def on_close(self) -> None:
@@ -1178,6 +1881,16 @@ class MultiChannelApp(tk.Tk):
             self.after(200, self._close_when_idle)
         else:
             self.destroy()
+
+    def _log(self, message: str) -> None:
+        timestamp = time.strftime("%H:%M:%S")
+        entry = f"[{timestamp}] {message}"
+        self.log_messages.append(entry)
+        if hasattr(self, "log_text"):
+            self.log_text.configure(state="normal")
+            self.log_text.insert(tk.END, entry + "\n")
+            self.log_text.see(tk.END)
+            self.log_text.configure(state="disabled")
 
 
 def main() -> None:
