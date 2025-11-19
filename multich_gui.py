@@ -159,6 +159,8 @@ def rows_to_presets(rows: Sequence[Dict[str, str]]) -> List[ChannelPreset]:
 class ChannelRow(ttk.Frame):
     """Widget that captures per-channel configuration."""
 
+    _last_directory: Optional[Path] = None
+
     def __init__(self, master, presets: List[ChannelPreset], controller):
         super().__init__(master, style="ChannelRow.TFrame", padding=8)
         self.controller = controller
@@ -319,6 +321,9 @@ class ChannelRow(ttk.Frame):
         ttk.Button(controls, text="Move Down", command=lambda: self.move_selected(1)).grid(
             row=3, column=0, pady=2, sticky="we"
         )
+        ttk.Button(controls, text="Clear All", command=self.clear_playlist).grid(
+            row=4, column=0, pady=2, sticky="we"
+        )
 
         channel_controls = ttk.Frame(self)
         channel_controls.grid(row=9, column=0, columnspan=3, padx=4, pady=4, sticky="e")
@@ -392,7 +397,7 @@ class ChannelRow(ttk.Frame):
 
     def add_files(self) -> None:
         self.clear_error()
-        filenames = filedialog.askopenfilenames(
+        dialog_kwargs = dict(
             title="Select audio files",
             filetypes=[
                 ("Audio files", "*.wav *.mp3"),
@@ -401,11 +406,24 @@ class ChannelRow(ttk.Frame):
                 ("All files", "*.*"),
             ],
         )
+        if self._last_directory is not None:
+            dialog_kwargs["initialdir"] = str(self._last_directory)
+        filenames = filedialog.askopenfilenames(**dialog_kwargs)
         if filenames:
             for name in filenames:
                 path = Path(name).expanduser()
                 self.playlist.append(self._create_entry(path))
+                self.__class__._last_directory = path.parent
             self._refresh_playlist()
+
+    def clear_playlist(self) -> None:
+        """Remove every queued file with a single action."""
+
+        if not self.playlist:
+            return
+        self.clear_error()
+        self.playlist.clear()
+        self._refresh_playlist()
 
     def remove_selected_files(self) -> None:
         self.clear_error()
@@ -929,6 +947,18 @@ class CollapsibleSection(ttk.Frame):
             self.content_frame.grid(row=1, column=0, sticky="we")
         self._refresh_toggle_text()
 
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Force the collapse state without the user clicking."""
+
+        if self._collapsed == collapsed:
+            return
+        self._collapsed = collapsed
+        if self._collapsed:
+            self.content_frame.grid_remove()
+        else:
+            self.content_frame.grid(row=1, column=0, sticky="we")
+        self._refresh_toggle_text()
+
     def _refresh_toggle_text(self) -> None:
         symbol = "►" if self._collapsed else "▼"
         self._toggle_btn.config(text=symbol)
@@ -1217,19 +1247,33 @@ class MultiChannelApp(tk.Tk):
 
         ttk.Separator(main).grid(row=3, column=0, columnspan=3, sticky="we", pady=(10, 5))
 
+        channels_header = ttk.Frame(main)
+        channels_header.grid(row=4, column=0, columnspan=3, sticky="we", **padding)
+        ttk.Label(channels_header, text="Channels", font=("", 11, "bold")).pack(
+            side="left"
+        )
+        toolbar = ttk.Frame(channels_header)
+        toolbar.pack(side="right")
+        ttk.Button(toolbar, text="Expand all", command=self.expand_all_channels).pack(
+            side="right", padx=2
+        )
+        ttk.Button(toolbar, text="Collapse all", command=self.collapse_all_channels).pack(
+            side="right", padx=2
+        )
+
         self.channels_container = ttk.Frame(main)
-        self.channels_container.grid(row=4, column=0, columnspan=3, sticky="nsew")
+        self.channels_container.grid(row=5, column=0, columnspan=3, sticky="nsew")
 
         add_btn = ttk.Button(main, text="Add Channel", command=self.add_channel)
-        add_btn.grid(row=5, column=0, sticky="w", **padding)
+        add_btn.grid(row=6, column=0, sticky="w", **padding)
 
         self.status_var = tk.StringVar(value="Idle")
         ttk.Label(main, textvariable=self.status_var).grid(
-            row=5, column=1, sticky="e", **padding
+            row=6, column=1, sticky="e", **padding
         )
 
         session_controls = ttk.Frame(main)
-        session_controls.grid(row=5, column=2, sticky="e", **padding)
+        session_controls.grid(row=6, column=2, sticky="e", **padding)
         ttk.Button(session_controls, text="Save Session…", command=self.save_session).grid(
             row=0, column=0, padx=4
         )
@@ -1238,7 +1282,7 @@ class MultiChannelApp(tk.Tk):
         )
 
         button_frame = ttk.Frame(main)
-        button_frame.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        button_frame.grid(row=7, column=0, columnspan=3, sticky="e", pady=(10, 0))
         self.start_button = ttk.Button(button_frame, text="Start", command=self.start_transmission)
         self.start_button.grid(row=0, column=0, padx=5)
         self.stop_button = ttk.Button(
@@ -1248,10 +1292,10 @@ class MultiChannelApp(tk.Tk):
         self.tx_progress = ttk.Progressbar(button_frame, mode="indeterminate", length=180)
         self.tx_progress.grid(row=0, column=2, padx=5)
 
-        ttk.Separator(main).grid(row=7, column=0, columnspan=3, sticky="we", pady=(10, 5))
+        ttk.Separator(main).grid(row=8, column=0, columnspan=3, sticky="we", pady=(10, 5))
 
         log_section = ttk.LabelFrame(main, text="Transmission Log")
-        log_section.grid(row=8, column=0, columnspan=3, sticky="nsew", **padding)
+        log_section.grid(row=9, column=0, columnspan=3, sticky="nsew", **padding)
         log_section.columnconfigure(0, weight=1)
         log_section.rowconfigure(0, weight=1)
         self.log_text = tk.Text(log_section, height=10, wrap="word", state="disabled")
@@ -1263,8 +1307,8 @@ class MultiChannelApp(tk.Tk):
         main.columnconfigure(1, weight=1)
         main.columnconfigure(0, weight=0)
         main.columnconfigure(2, weight=0)
-        main.rowconfigure(4, weight=2)
-        main.rowconfigure(8, weight=1)
+        main.rowconfigure(5, weight=2)
+        main.rowconfigure(9, weight=1)
 
     def add_channel(self, state: Optional[Dict[str, str]] = None) -> ChannelRow:
         section = CollapsibleSection(self.channels_container, title="")
@@ -1302,9 +1346,7 @@ class MultiChannelApp(tk.Tk):
         # Collapse duplicated section to reduce clutter
         section = self._channel_sections.get(new_row)
         if section:
-            section._collapsed = False
-            section.content_frame.grid(row=1, column=0, sticky="we")
-            section._refresh_toggle_text()
+            section.set_collapsed(False)
         self._log("Duplicated channel configuration.")
 
     def move_channel(self, row: ChannelRow, direction: int) -> None:
@@ -1320,6 +1362,22 @@ class MultiChannelApp(tk.Tk):
         )
         self._refresh_channel_positions()
         self._log(f"Moved channel to position {new_idx + 1}.")
+
+    def expand_all_channels(self) -> None:
+        if not self._channel_sections:
+            return
+        for section in self._channel_sections.values():
+            if section is not None:
+                section.set_collapsed(False)
+        self._log("Expanded all channel panels.")
+
+    def collapse_all_channels(self) -> None:
+        if not self._channel_sections:
+            return
+        for section in self._channel_sections.values():
+            if section is not None:
+                section.set_collapsed(True)
+        self._log("Collapsed all channel panels.")
 
     def _refresh_channel_positions(self) -> None:
         for idx, channel in enumerate(self.channel_rows):
