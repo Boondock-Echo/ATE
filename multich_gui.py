@@ -32,6 +32,191 @@ DEFAULT_CTCSS_LEVEL = 0.20
 DEFAULT_TX_GAIN_OVERRIDE = 10.0
 
 
+TRANSMITTER_SETTINGS_PATH = Path(__file__).with_name("transmitter_settings.json")
+
+TRANSMITTER_SETTING_FIELDS = [
+    dict(
+        key="tx_sample_rate",
+        attr="tx_sr_var",
+        name="TX sample rate",
+        label="TX Sample Rate (sps):",
+        min=1_000_000,
+        max=20_000_000,
+        step=100_000,
+        help="1–20 Msps keeps HackRF happy.",
+    ),
+    dict(
+        key="mod_sample_rate",
+        attr="mod_sr_var",
+        name="Mod sample rate",
+        label="Mod Sample Rate (sps):",
+        min=10_000,
+        max=1_000_000,
+        step=5_000,
+        help="48–250 kS/s per channel works well.",
+    ),
+    dict(
+        key="deviation_hz",
+        attr="deviation_var",
+        name="FM deviation",
+        label="FM Deviation (Hz):",
+        min=100,
+        max=75_000,
+        step=100,
+        help="NBFM is usually ±3 kHz.",
+    ),
+    dict(
+        key="master_scale",
+        attr="master_scale_var",
+        name="Master scale",
+        label="Master Scale:",
+        min=0.1,
+        max=2.0,
+        step=0.05,
+        help="Scales the summed waveform before transmit.",
+    ),
+    dict(
+        key="ctcss_level",
+        attr="ctcss_level_var",
+        name="CTCSS level",
+        label="CTCSS Level (amplitude):",
+        min=0.01,
+        max=1.0,
+        step=0.01,
+        help="0.05–0.3 keeps tones audible without clipping.",
+    ),
+    dict(
+        key="ctcss_deviation",
+        attr="ctcss_deviation_var",
+        name="CTCSS deviation",
+        label="CTCSS Deviation (Hz):",
+        min=10,
+        max=1_000,
+        allow_empty=True,
+        help="Optional: overrides amplitude scaling when set.",
+        widget="entry",
+    ),
+    dict(
+        key="tx_gain_override",
+        attr="tx_gain_var",
+        name="TX gain override",
+        label="TX Gain Override (dB):",
+        min=-50,
+        max=70,
+        allow_empty=True,
+        help="Leave blank to rely on the device default.",
+        widget="entry",
+    ),
+    dict(
+        key="gate_open_threshold",
+        attr="gate_open_var",
+        name="Gate open threshold",
+        label="Gate Open Threshold:",
+        min=0.0,
+        max=0.5,
+        step=0.001,
+        help="Signal level that starts the tone gate.",
+    ),
+    dict(
+        key="gate_close_threshold",
+        attr="gate_close_var",
+        name="Gate close threshold",
+        label="Gate Close Threshold:",
+        min=0.0,
+        max=0.5,
+        step=0.001,
+        help="Must stay below the open threshold to prevent chatter.",
+    ),
+    dict(
+        key="gate_attack_ms",
+        attr="gate_attack_var",
+        name="Gate attack",
+        label="Gate Attack (ms):",
+        min=0.0,
+        max=1_000.0,
+        allow_empty=True,
+        help="Blank uses the default 4 ms fade-in.",
+        widget="entry",
+    ),
+    dict(
+        key="gate_release_ms",
+        attr="gate_release_var",
+        name="Gate release",
+        label="Gate Release (ms):",
+        min=0.0,
+        max=5_000.0,
+        allow_empty=True,
+        help="Blank uses the default 200 ms tail.",
+        widget="entry",
+    ),
+]
+
+DEFAULT_TRANSMITTER_SETTINGS: Dict[str, Optional[float]] = {
+    "tx_sample_rate": DEFAULT_TX_SAMPLE_RATE,
+    "mod_sample_rate": DEFAULT_MOD_SAMPLE_RATE,
+    "deviation_hz": DEFAULT_DEVIATION_HZ,
+    "master_scale": DEFAULT_MASTER_SCALE,
+    "ctcss_level": DEFAULT_CTCSS_LEVEL,
+    "ctcss_deviation": None,
+    "tx_gain_override": DEFAULT_TX_GAIN_OVERRIDE,
+    "gate_open_threshold": DEFAULT_GATE_OPEN_THRESHOLD,
+    "gate_close_threshold": DEFAULT_GATE_CLOSE_THRESHOLD,
+    "gate_attack_ms": DEFAULT_GATE_ATTACK_MS,
+    "gate_release_ms": DEFAULT_GATE_RELEASE_MS,
+}
+
+
+def _format_setting_value(value: Optional[float]) -> str:
+    return "" if value is None else f"{float(value):g}"
+
+
+def load_transmitter_settings(path: Path = TRANSMITTER_SETTINGS_PATH) -> Dict[str, Optional[float]]:
+    """Load saved transmitter defaults from disk."""
+
+    settings = dict(DEFAULT_TRANSMITTER_SETTINGS)
+    if not path.exists():
+        return settings
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Unable to load transmitter settings from {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Transmitter settings in {path} must be a JSON object")
+
+    allow_empty_keys = {
+        field["key"]
+        for field in TRANSMITTER_SETTING_FIELDS
+        if field.get("allow_empty")
+    }
+    for key in settings.keys():
+        if key not in data:
+            continue
+        raw_value = data[key]
+        if raw_value is None:
+            if key in allow_empty_keys:
+                settings[key] = None
+                continue
+            raise ValueError(f"Transmitter setting '{key}' cannot be null")
+        try:
+            settings[key] = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid value for '{key}' in {path}: {raw_value!r}") from exc
+    return settings
+
+
+def save_transmitter_settings(
+    settings: Dict[str, Optional[float]], path: Path = TRANSMITTER_SETTINGS_PATH
+) -> None:
+    """Persist transmitter defaults to disk."""
+
+    serializable: Dict[str, Optional[float]] = {}
+    for key in DEFAULT_TRANSMITTER_SETTINGS.keys():
+        serializable[key] = settings.get(key)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(serializable, handle, indent=2)
+
+
 @dataclass(frozen=True)
 class ChannelPreset:
     """Represents a selectable preset channel."""
@@ -931,6 +1116,92 @@ class PresetManagerDialog(tk.Toplevel):
         self.result = list(self.presets)
         self.destroy()
 
+
+class TransmitterSettingsDialog(simpledialog.Dialog):
+    """Modal dialog used to edit the persisted transmitter defaults."""
+
+    def __init__(self, master, settings: Dict[str, Optional[float]]):
+        self._settings = dict(settings)
+        self.result: Optional[Dict[str, Optional[float]]] = None
+        self._vars: Dict[str, tk.StringVar] = {}
+        super().__init__(master, title="Transmitter Settings")
+
+    def body(self, master):  # pragma: no cover - modal UI
+        first_entry = None
+        for idx, field in enumerate(TRANSMITTER_SETTING_FIELDS):
+            row = idx * 2
+            ttk.Label(master, text=field["label"]).grid(
+                row=row, column=0, sticky="w", padx=6, pady=(8 if idx == 0 else 4, 0)
+            )
+            key = field["key"]
+            var = tk.StringVar(value=_format_setting_value(self._settings.get(key)))
+            entry = ttk.Entry(master, textvariable=var)
+            entry.grid(row=row, column=1, sticky="we", padx=6, pady=(8 if idx == 0 else 4, 0))
+            if first_entry is None:
+                first_entry = entry
+            self._vars[key] = var
+            help_text = field.get("help")
+            if help_text:
+                ttk.Label(master, text=help_text, font=("", 9, "italic"), wraplength=360).grid(
+                    row=row + 1,
+                    column=0,
+                    columnspan=2,
+                    sticky="w",
+                    padx=6,
+                    pady=(0, 2),
+                )
+        master.columnconfigure(1, weight=1)
+        return first_entry
+
+    def buttonbox(self):  # pragma: no cover - modal UI
+        box = ttk.Frame(self)
+        restore = ttk.Button(box, text="Restore Defaults", command=self._restore_defaults)
+        restore.grid(row=0, column=0, padx=5, pady=5)
+        ok_btn = ttk.Button(box, text="Save", command=self.ok)
+        ok_btn.grid(row=0, column=1, padx=5, pady=5)
+        cancel_btn = ttk.Button(box, text="Cancel", command=self.cancel)
+        cancel_btn.grid(row=0, column=2, padx=5, pady=5)
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.grid(column=0, row=len(TRANSMITTER_SETTING_FIELDS) * 2, columnspan=2, sticky="e")
+
+    def validate(self) -> bool:  # pragma: no cover - modal UI
+        try:
+            new_settings = self._collect_settings()
+        except ValueError as exc:
+            messagebox.showerror("Invalid setting", str(exc), parent=self)
+            return False
+        self.result = new_settings
+        return True
+
+    def _collect_settings(self) -> Dict[str, Optional[float]]:
+        collected: Dict[str, Optional[float]] = {}
+        for field in TRANSMITTER_SETTING_FIELDS:
+            key = field["key"]
+            text = self._vars[key].get().strip()
+            if not text:
+                if field.get("allow_empty"):
+                    collected[key] = None
+                    continue
+                raise ValueError(f"{field['name']} is required.")
+            try:
+                value = float(text)
+            except ValueError as exc:
+                raise ValueError(f"{field['name']} must be numeric.") from exc
+            collected[key] = value
+        open_val = collected["gate_open_threshold"]
+        close_val = collected["gate_close_threshold"]
+        if open_val is not None and close_val is not None and close_val >= open_val:
+            raise ValueError("Gate close threshold must be lower than the open threshold.")
+        return collected
+
+    def _restore_defaults(self) -> None:
+        for field in TRANSMITTER_SETTING_FIELDS:
+            key = field["key"]
+            default_value = DEFAULT_TRANSMITTER_SETTINGS.get(key)
+            self._vars[key].set(_format_setting_value(default_value))
+
+
     def _on_cancel(self):  # pragma: no cover - modal UI
         self.result = None
         self.destroy()
@@ -1016,17 +1287,19 @@ class MultiChannelApp(tk.Tk):
 
     def __init__(
         self,
-        tx_sample_rate: float = DEFAULT_TX_SAMPLE_RATE,
-        mod_sample_rate: float = DEFAULT_MOD_SAMPLE_RATE,
-        deviation_hz: float = DEFAULT_DEVIATION_HZ,
-        master_scale: float = DEFAULT_MASTER_SCALE,
-        ctcss_level: float = DEFAULT_CTCSS_LEVEL,
+        tx_sample_rate: Optional[float] = None,
+        mod_sample_rate: Optional[float] = None,
+        deviation_hz: Optional[float] = None,
+        master_scale: Optional[float] = None,
+        ctcss_level: Optional[float] = None,
         ctcss_deviation: Optional[float] = None,
-        tx_gain_override: Optional[float] = DEFAULT_TX_GAIN_OVERRIDE,
-        gate_open_threshold: float = DEFAULT_GATE_OPEN_THRESHOLD,
-        gate_close_threshold: float = DEFAULT_GATE_CLOSE_THRESHOLD,
-        gate_attack_ms: float = DEFAULT_GATE_ATTACK_MS,
-        gate_release_ms: float = DEFAULT_GATE_RELEASE_MS,
+        tx_gain_override: Optional[float] = None,
+        gate_open_threshold: Optional[float] = None,
+        gate_close_threshold: Optional[float] = None,
+        gate_attack_ms: Optional[float] = None,
+        gate_release_ms: Optional[float] = None,
+        *,
+        settings_path: Optional[Path] = None,
     ):
         super().__init__()
 
@@ -1039,23 +1312,41 @@ class MultiChannelApp(tk.Tk):
             messagebox.showerror("Preset load failure", str(exc))
             raise
 
+        self._settings_path = settings_path or TRANSMITTER_SETTINGS_PATH
+        try:
+            self._persisted_settings = load_transmitter_settings(self._settings_path)
+        except Exception as exc:  # pragma: no cover - UI feedback
+            messagebox.showerror("Transmitter defaults", str(exc))
+            raise
+        self._cli_overrides: Dict[str, Optional[float]] = {}
+        self._active_settings = self._compose_active_settings(
+            tx_sample_rate=tx_sample_rate,
+            mod_sample_rate=mod_sample_rate,
+            deviation_hz=deviation_hz,
+            master_scale=master_scale,
+            ctcss_level=ctcss_level,
+            ctcss_deviation=ctcss_deviation,
+            tx_gain_override=tx_gain_override,
+            gate_open_threshold=gate_open_threshold,
+            gate_close_threshold=gate_close_threshold,
+            gate_attack_ms=gate_attack_ms,
+            gate_release_ms=gate_release_ms,
+        )
+
         self.device_var = tk.StringVar(value="hackrf")
         self.loop_var = tk.BooleanVar(value=True)
-        self.tx_sr_var = tk.StringVar(value=f"{float(tx_sample_rate)}")
-        self.mod_sr_var = tk.StringVar(value=f"{float(mod_sample_rate)}")
-        self.deviation_var = tk.StringVar(value=f"{float(deviation_hz)}")
-        self.master_scale_var = tk.StringVar(value=f"{float(master_scale)}")
-        self.ctcss_level_var = tk.StringVar(value=f"{float(ctcss_level)}")
-        self.ctcss_deviation_var = tk.StringVar(
-            value="" if ctcss_deviation is None else f"{float(ctcss_deviation)}"
-        )
-        self.tx_gain_var = tk.StringVar(
-            value="" if tx_gain_override is None else f"{float(tx_gain_override)}"
-        )
-        self.gate_open_var = tk.StringVar(value=f"{float(gate_open_threshold)}")
-        self.gate_close_var = tk.StringVar(value=f"{float(gate_close_threshold)}")
-        self.gate_attack_var = tk.StringVar(value=f"{float(gate_attack_ms)}")
-        self.gate_release_var = tk.StringVar(value=f"{float(gate_release_ms)}")
+        self.tx_sr_var = tk.StringVar()
+        self.mod_sr_var = tk.StringVar()
+        self.deviation_var = tk.StringVar()
+        self.master_scale_var = tk.StringVar()
+        self.ctcss_level_var = tk.StringVar()
+        self.ctcss_deviation_var = tk.StringVar()
+        self.tx_gain_var = tk.StringVar()
+        self.gate_open_var = tk.StringVar()
+        self.gate_close_var = tk.StringVar()
+        self.gate_attack_var = tk.StringVar()
+        self.gate_release_var = tk.StringVar()
+        self._apply_transmitter_settings_to_vars(self._active_settings)
 
         self.channel_rows: List[ChannelRow] = []
         self._channel_sections: Dict[ChannelRow, CollapsibleSection] = {}
@@ -1076,6 +1367,42 @@ class MultiChannelApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._log("Application initialized.")
 
+    def _compose_active_settings(self, **overrides: Optional[float]) -> Dict[str, Optional[float]]:
+        settings = dict(DEFAULT_TRANSMITTER_SETTINGS)
+        settings.update(self._persisted_settings)
+        for key, value in overrides.items():
+            if value is not None:
+                self._cli_overrides[key] = value
+                settings[key] = value
+        self._active_settings = settings
+        return settings
+
+    def _apply_transmitter_settings_to_vars(
+        self, settings: Dict[str, Optional[float]]
+    ) -> None:
+        self.tx_sr_var.set(_format_setting_value(settings["tx_sample_rate"]))
+        self.mod_sr_var.set(_format_setting_value(settings["mod_sample_rate"]))
+        self.deviation_var.set(_format_setting_value(settings["deviation_hz"]))
+        self.master_scale_var.set(_format_setting_value(settings["master_scale"]))
+        self.ctcss_level_var.set(_format_setting_value(settings["ctcss_level"]))
+        self.ctcss_deviation_var.set(
+            _format_setting_value(settings.get("ctcss_deviation"))
+        )
+        self.tx_gain_var.set(_format_setting_value(settings.get("tx_gain_override")))
+        self.gate_open_var.set(_format_setting_value(settings["gate_open_threshold"]))
+        self.gate_close_var.set(_format_setting_value(settings["gate_close_threshold"]))
+        self.gate_attack_var.set(_format_setting_value(settings.get("gate_attack_ms")))
+        self.gate_release_var.set(_format_setting_value(settings.get("gate_release_ms")))
+
+    def _refresh_active_settings_from_persisted(self) -> None:
+        active = dict(DEFAULT_TRANSMITTER_SETTINGS)
+        active.update(self._persisted_settings)
+        for key, value in self._cli_overrides.items():
+            if value is not None:
+                active[key] = value
+        self._active_settings = active
+        self._apply_transmitter_settings_to_vars(active)
+
     def _build_menu(self) -> None:
         menubar = tk.Menu(self)
         file_menu = tk.Menu(menubar, tearoff=False)
@@ -1090,6 +1417,13 @@ class MultiChannelApp(tk.Tk):
         presets_menu.add_command(label="Import Presets…", command=self.import_presets_from_file)
         presets_menu.add_command(label="Export Presets…", command=self.export_presets_to_file)
         menubar.add_cascade(label="Presets", menu=presets_menu)
+
+        settings_menu = tk.Menu(menubar, tearoff=False)
+        settings_menu.add_command(
+            label="Manage Transmitter Settings…",
+            command=self.open_transmitter_settings_manager,
+        )
+        menubar.add_cascade(label="Settings", menu=settings_menu)
 
         self.config(menu=menubar)
 
@@ -1132,111 +1466,11 @@ class MultiChannelApp(tk.Tk):
         settings = settings_section.content_frame
         subpad = dict(padx=4, pady=2)
         settings.columnconfigure(2, weight=1)
-        settings_fields = [
-            dict(
-                name="TX sample rate",
-                label="TX Sample Rate (sps):",
-                var=self.tx_sr_var,
-                min=1_000_000,
-                max=20_000_000,
-                step=100_000,
-                help="1–20 Msps keeps HackRF happy.",
-            ),
-            dict(
-                name="Mod sample rate",
-                label="Mod Sample Rate (sps):",
-                var=self.mod_sr_var,
-                min=10_000,
-                max=1_000_000,
-                step=5_000,
-                help="48–250 kS/s per channel works well.",
-            ),
-            dict(
-                name="FM deviation",
-                label="FM Deviation (Hz):",
-                var=self.deviation_var,
-                min=100,
-                max=75_000,
-                step=100,
-                help="NBFM is usually ±3 kHz.",
-            ),
-            dict(
-                name="Master scale",
-                label="Master Scale:",
-                var=self.master_scale_var,
-                min=0.1,
-                max=2.0,
-                step=0.05,
-                help="Scales the summed waveform before transmit.",
-            ),
-            dict(
-                name="CTCSS level",
-                label="CTCSS Level (amplitude):",
-                var=self.ctcss_level_var,
-                min=0.01,
-                max=1.0,
-                step=0.01,
-                help="0.05–0.3 keeps tones audible without clipping.",
-            ),
-            dict(
-                name="CTCSS deviation",
-                label="CTCSS Deviation (Hz):",
-                var=self.ctcss_deviation_var,
-                min=10,
-                max=1_000,
-                allow_empty=True,
-                help="Optional: overrides amplitude scaling when set.",
-                widget="entry",
-            ),
-            dict(
-                name="TX gain override",
-                label="TX Gain Override (dB):",
-                var=self.tx_gain_var,
-                min=-50,
-                max=70,
-                allow_empty=True,
-                help="Leave blank to rely on the device default.",
-                widget="entry",
-            ),
-            dict(
-                name="Gate open threshold",
-                label="Gate Open Threshold:",
-                var=self.gate_open_var,
-                min=0.0,
-                max=0.5,
-                step=0.001,
-                help="Signal level that starts the tone gate.",
-            ),
-            dict(
-                name="Gate close threshold",
-                label="Gate Close Threshold:",
-                var=self.gate_close_var,
-                min=0.0,
-                max=0.5,
-                step=0.001,
-                help="Must stay below the open threshold to prevent chatter.",
-            ),
-            dict(
-                name="Gate attack",
-                label="Gate Attack (ms):",
-                var=self.gate_attack_var,
-                min=0.0,
-                max=1_000.0,
-                allow_empty=True,
-                help="Blank uses the default 4 ms fade-in.",
-                widget="entry",
-            ),
-            dict(
-                name="Gate release",
-                label="Gate Release (ms):",
-                var=self.gate_release_var,
-                min=0.0,
-                max=5_000.0,
-                allow_empty=True,
-                help="Blank uses the default 200 ms tail.",
-                widget="entry",
-            ),
-        ]
+        settings_fields = []
+        for field in TRANSMITTER_SETTING_FIELDS:
+            spec = dict(field)
+            spec["var"] = getattr(self, field["attr"])
+            settings_fields.append(spec)
 
         for idx, field in enumerate(settings_fields):
             ttk.Label(settings, text=field["label"]).grid(
@@ -1559,6 +1793,20 @@ class MultiChannelApp(tk.Tk):
             self.presets = dialog.result
             self._broadcast_preset_update()
             self._log(f"Preset library updated ({len(self.presets)} entries).")
+
+    def open_transmitter_settings_manager(self) -> None:
+        dialog = TransmitterSettingsDialog(self, self._persisted_settings)
+        if dialog.result is None:
+            return
+        updated_settings = dict(dialog.result)
+        try:
+            save_transmitter_settings(updated_settings, self._settings_path)
+        except Exception as exc:  # pragma: no cover - UI feedback
+            messagebox.showerror("Save failed", str(exc))
+            return
+        self._persisted_settings = updated_settings
+        self._refresh_active_settings_from_persisted()
+        self._log("Transmitter defaults updated.")
 
     def import_presets_from_file(self) -> None:
         filename = filedialog.askopenfilename(
@@ -2019,30 +2267,35 @@ def parse_args() -> argparse.Namespace:
             " exposed in the GUI."
         )
     )
-    parser.add_argument("--tx-sr", type=float, default=DEFAULT_TX_SAMPLE_RATE, help="Default TX sample rate (sps)")
+    parser.add_argument(
+        "--tx-sr",
+        type=float,
+        default=None,
+        help="Override the saved TX sample rate (sps). Uses transmitter_settings.json by default.",
+    )
     parser.add_argument(
         "--mod-sr",
         type=float,
-        default=DEFAULT_MOD_SAMPLE_RATE,
-        help="Default per-channel modulation sample rate (sps)",
+        default=None,
+        help="Override the saved per-channel modulation sample rate (sps).",
     )
     parser.add_argument(
         "--deviation",
         type=float,
-        default=DEFAULT_DEVIATION_HZ,
-        help="Default per-channel FM deviation (Hz)",
+        default=None,
+        help="Override the saved per-channel FM deviation (Hz).",
     )
     parser.add_argument(
         "--master-scale",
         type=float,
-        default=DEFAULT_MASTER_SCALE,
-        help="Default master amplitude scale applied to the summed waveform",
+        default=None,
+        help="Override the saved master amplitude scale applied to the summed waveform.",
     )
     parser.add_argument(
         "--ctcss-level",
         type=float,
-        default=DEFAULT_CTCSS_LEVEL,
-        help="Default CTCSS amplitude used when a channel enables tone transmit",
+        default=None,
+        help="Override the saved CTCSS amplitude used when a channel enables tone transmit.",
     )
     parser.add_argument(
         "--ctcss-deviation",
@@ -2053,32 +2306,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tx-gain",
         type=float,
-        default=DEFAULT_TX_GAIN_OVERRIDE,
-        help="Optional default TX gain override (dB) applied regardless of device",
+        default=None,
+        help="Override the saved TX gain override (dB). Leave unset to use the saved value.",
     )
     parser.add_argument(
         "--gate-open",
         type=float,
-        default=DEFAULT_GATE_OPEN_THRESHOLD,
-        help="Default gate open threshold (absolute amplitude)",
+        default=None,
+        help="Override the saved gate open threshold (absolute amplitude).",
     )
     parser.add_argument(
         "--gate-close",
         type=float,
-        default=DEFAULT_GATE_CLOSE_THRESHOLD,
-        help="Default gate close threshold (absolute amplitude)",
+        default=None,
+        help="Override the saved gate close threshold (absolute amplitude).",
     )
     parser.add_argument(
         "--gate-attack-ms",
         type=float,
-        default=DEFAULT_GATE_ATTACK_MS,
-        help="Default gate attack in milliseconds",
+        default=None,
+        help="Override the saved gate attack in milliseconds.",
     )
     parser.add_argument(
         "--gate-release-ms",
         type=float,
-        default=DEFAULT_GATE_RELEASE_MS,
-        help="Default gate release in milliseconds",
+        default=None,
+        help="Override the saved gate release in milliseconds.",
     )
     return parser.parse_args()
 

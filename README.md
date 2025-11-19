@@ -51,8 +51,11 @@ graph TD
   can configure devices, FRS/GMRS channel selections, per-channel playlists,
   and gain levels without memorizing CLI arguments. Editable fields expose the
   TX sample rate, modulation rate, FM deviation, master scale, and CTCSS tone
-  level/deviation so you can experiment with squelch settings; pass
-  `python multich_gui.py --help` to override their defaults via CLI flags.
+  level/deviation so you can experiment with squelch settings. Core
+  transmitter defaults now live in `transmitter_settings.json` so you can tweak
+  them once via the GUI's **Settings → Manage Transmitter Settings…** dialog
+  instead of retyping CLI overrides every launch. Pass `python multich_gui.py
+  --help` to temporarily override any of the saved defaults via CLI flags.
 * `ctcss_channel1_squelch.py` – helper utility that reuses the main
   transmitter pipeline to broadcast a continuous CTCSS tone (default 67.0 Hz)
   on channel 1. This is handy for validating that handheld receivers open
@@ -70,6 +73,15 @@ The GUI reads `channel_presets.csv` (bundled in this repository) to populate
 its channel picker. Edit that CSV to add, rename, or reorder channels for your
 site. Each preset must provide a `frequency_hz` column, and the `display_name`
 is shown in the dropdown list.
+
+### Transmitter defaults
+
+`transmitter_settings.json` stores the validated baseline values for TX sample
+rate, modulation rate, FM deviation, master scale, tone levels, and squelch
+gate thresholds. Use the GUI's Settings menu to edit these values through a
+form that mirrors the live transmitter controls. The dialog persists your
+changes back to the JSON file so subsequent sessions inherit the tuned
+defaults.
 
 ### Dependencies
 
