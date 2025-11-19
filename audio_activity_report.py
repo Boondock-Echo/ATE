@@ -120,7 +120,7 @@ def _measure_activity(
 
 
 def analyze_audio_file(
-    path: Path, threshold: float = 0.02, chunk_ms: float = 20.0
+    path: Path, threshold: float = 0.1, chunk_ms: float = 1000.0
 ) -> AudioActivitySummary:
     path = path.expanduser().resolve()
     suffix = path.suffix.lower()
@@ -240,13 +240,13 @@ def main() -> None:  # pragma: no cover - CLI wrapper
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.02,
+        default=0.1,
         help="Normalized RMS threshold (0-1) that counts a chunk as active.",
     )
     parser.add_argument(
         "--chunk-ms",
         type=float,
-        default=20.0,
+        default=1000.0,
         help="Chunk duration, in milliseconds, to evaluate for activity.",
     )
     parser.add_argument(
@@ -257,8 +257,8 @@ def main() -> None:  # pragma: no cover - CLI wrapper
     parser.add_argument(
         "--output",
         type=Path,
-        default=None,
-        help="Optional CSV output path. Defaults to stdout.",
+        default=Path("audio_duty_cycle.mp3"),
+        help="Optional CSV output path. Defaults to audio_duty_cycle.mp3.",
     )
 
     args = parser.parse_args()

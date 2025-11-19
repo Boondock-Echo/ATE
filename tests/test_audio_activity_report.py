@@ -1,3 +1,6 @@
+import csv
+import subprocess
+import sys
 import wave
 from pathlib import Path
 
@@ -49,3 +52,29 @@ def test_discover_audio_files_filters_supported_types(tmp_path):
     discovered = discover_audio_files([tmp_path], recursive=True)
 
     assert set(discovered) == {wav_path.resolve(), mp3_path.resolve(), nested_wav.resolve()}
+
+
+def test_cli_defaults_write_csv_to_default_path(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "audio_activity_report.py"
+    wav_path = tmp_path / "clip.wav"
+    sr = 8000
+    samples = np.zeros(sr, dtype=np.float32)
+    _write_wav(wav_path, sr, samples)
+
+    result = subprocess.run(
+        [sys.executable, str(script), str(wav_path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout == ""
+    output_path = tmp_path / "audio_duty_cycle.mp3"
+    assert output_path.exists()
+
+    with output_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+
+    assert rows and rows[0]["path"] == str(wav_path.resolve())
