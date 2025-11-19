@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import audioop
 import csv
 import sys
+import math
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, List, Sequence, Tuple
@@ -53,8 +54,28 @@ def discover_audio_files(paths: Sequence[Path], recursive: bool = False) -> List
 def _normalized_rms(chunk: bytes, sample_width: int) -> float:
     if not chunk:
         return 0.0
+
+    usable = len(chunk) - (len(chunk) % sample_width)
+    if usable <= 0:
+        return 0.0
+
+    if sample_width != 2:
+        raise ValueError("Only 16-bit PCM is supported")
+
+    samples = array("h")
+    samples.frombytes(chunk[:usable])
+    if sys.byteorder == "big":
+        samples.byteswap()
+
+    if not samples:
+        return 0.0
+
     peak = float(1 << (sample_width * 8 - 1))
-    return audioop.rms(chunk, sample_width) / peak
+    sum_squares = 0.0
+    for sample in samples:
+        sum_squares += float(sample * sample)
+    rms = math.sqrt(sum_squares / len(samples)) if sum_squares else 0.0
+    return rms / peak
 
 
 def _measure_activity(
