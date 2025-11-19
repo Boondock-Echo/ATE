@@ -57,6 +57,10 @@ graph TD
   transmitter pipeline to broadcast a continuous CTCSS tone (default 67.0 Hz)
   on channel 1. This is handy for validating that handheld receivers open
   squelch for the configured tone without re-entering full playlists.
+* `audio_activity_report.py` – utility that scans WAV/MP3 files and reports
+  their audio duty cycle (percentage of chunks whose RMS amplitude exceeds a
+  configurable threshold). Use this to build CSV summaries of long playlists
+  before scheduling them for transmission.
 
 ### Channel presets
 
