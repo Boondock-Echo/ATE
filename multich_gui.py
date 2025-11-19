@@ -1163,7 +1163,7 @@ class TransmitterSettingsDialog(simpledialog.Dialog):
         cancel_btn.grid(row=0, column=2, padx=5, pady=5)
         self.bind("<Return>", self.ok)
         self.bind("<Escape>", self.cancel)
-        box.grid(column=0, row=len(TRANSMITTER_SETTING_FIELDS) * 2, columnspan=2, sticky="e")
+        box.pack(anchor="e", padx=6, pady=6)
 
     def validate(self) -> bool:  # pragma: no cover - modal UI
         try:
