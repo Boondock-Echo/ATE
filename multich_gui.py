@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import csv
+import importlib
 import json
 import threading
 import time
@@ -47,6 +48,31 @@ class PlaylistEntry:
     path: Path
     duration: Optional[float] = None
     sample_rate: Optional[int] = None
+
+
+_MP3_CLASS = None
+_MP3_UNAVAILABLE = False
+
+
+def _get_mp3_loader():
+    """Lazily import the MP3 metadata reader from mutagen if available."""
+
+    global _MP3_CLASS, _MP3_UNAVAILABLE
+    if _MP3_UNAVAILABLE:
+        return None
+    if _MP3_CLASS is not None:
+        return _MP3_CLASS
+    spec = importlib.util.find_spec("mutagen.mp3")
+    if spec is None:
+        _MP3_UNAVAILABLE = True
+        return None
+    module = importlib.import_module("mutagen.mp3")
+    mp3_class = getattr(module, "MP3", None)
+    if mp3_class is None:
+        _MP3_UNAVAILABLE = True
+        return None
+    _MP3_CLASS = mp3_class
+    return _MP3_CLASS
 
 
 def load_channel_presets() -> List[ChannelPreset]:
@@ -510,6 +536,22 @@ class ChannelRow(ttk.Frame):
             except Exception:
                 duration = None
                 sample_rate = None
+        elif path.suffix.lower() == ".mp3":
+            mp3_loader = _get_mp3_loader()
+            if mp3_loader is not None:
+                try:
+                    audio = mp3_loader(str(path))
+                    info = getattr(audio, "info", None)
+                    if info is not None:
+                        duration = getattr(info, "length", None)
+                        sample_rate = getattr(info, "sample_rate", None)
+                        if duration is not None:
+                            duration = float(duration)
+                        if sample_rate is not None:
+                            sample_rate = int(sample_rate)
+                except Exception:
+                    duration = None
+                    sample_rate = None
         return PlaylistEntry(path=path, duration=duration, sample_rate=sample_rate)
 
     def get_playlist_paths(self) -> List[Path]:
