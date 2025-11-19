@@ -257,8 +257,8 @@ def main() -> None:  # pragma: no cover - CLI wrapper
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("audio_duty_cycle.mp3"),
-        help="Optional CSV output path. Defaults to audio_duty_cycle.mp3.",
+        default=Path("audio_duty_cycle.csv"),
+        help="Optional CSV output path. Defaults to audio_duty_cycle.csv.",
     )
 
     args = parser.parse_args()

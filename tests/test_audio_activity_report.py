@@ -70,7 +70,7 @@ def test_cli_defaults_write_csv_to_default_path(tmp_path):
     )
 
     assert result.stdout == ""
-    output_path = tmp_path / "audio_duty_cycle.mp3"
+    output_path = tmp_path / "audio_duty_cycle.csv"
     assert output_path.exists()
 
     with output_path.open(newline="", encoding="utf-8") as handle:

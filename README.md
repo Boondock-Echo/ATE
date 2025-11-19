@@ -60,7 +60,7 @@ graph TD
 * `audio_activity_report.py` – utility that scans WAV/MP3 files and reports
   their audio duty cycle (percentage of chunks whose RMS amplitude exceeds a
   configurable threshold). By default it evaluates one-second chunks with a
-  0.1 RMS threshold and writes the CSV summary to `audio_duty_cycle.mp3`, but
+  0.1 RMS threshold and writes the CSV summary to `audio_duty_cycle.csv`, but
   you can override any of those settings via CLI flags. Use this to build CSV
   summaries of long playlists before scheduling them for transmission.
 
