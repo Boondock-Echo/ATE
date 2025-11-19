@@ -1441,6 +1441,8 @@ class MultiChannelApp(tk.Tk):
         padding = dict(padx=10, pady=5)
         main = ttk.Frame(self)
         main.pack(fill="both", expand=True, padx=10, pady=10)
+        main.columnconfigure(1, weight=1)
+        main.columnconfigure(2, weight=1)
 
         ttk.Label(main, text="Device:").grid(row=0, column=0, sticky="w", **padding)
         device_combo = ttk.Combobox(
@@ -1461,70 +1463,10 @@ class MultiChannelApp(tk.Tk):
             variable=self.loop_var,
         ).grid(row=1, column=0, columnspan=2, sticky="w", **padding)
 
-        settings_section = CollapsibleSection(main, title="Transmitter Settings")
-        settings_section.grid(row=2, column=0, columnspan=3, sticky="we", **padding)
-        settings = settings_section.content_frame
-        subpad = dict(padx=4, pady=2)
-        settings.columnconfigure(2, weight=1)
-        settings_fields = []
-        for field in TRANSMITTER_SETTING_FIELDS:
-            spec = dict(field)
-            spec["var"] = getattr(self, field["attr"])
-            settings_fields.append(spec)
-
-        for idx, field in enumerate(settings_fields):
-            ttk.Label(settings, text=field["label"]).grid(
-                row=idx, column=0, sticky="w", **subpad
-            )
-            if field.get("widget", "spinbox") == "spinbox":
-                widget = ttk.Spinbox(
-                    settings,
-                    textvariable=field["var"],
-                    from_=field.get("min", 0.0),
-                    to=field.get("max", 0.0),
-                    increment=field.get("step", 1.0),
-                    width=18,
-                )
-            else:
-                widget = ttk.Entry(settings, textvariable=field["var"], width=18)
-            widget.grid(row=idx, column=1, sticky="we", **subpad)
-            helper = field.get("help")
-            if helper:
-                ttk.Label(settings, text=helper, font=("", 9)).grid(
-                    row=idx, column=2, sticky="w", **subpad
-                )
-            self._register_numeric_validator(
-                field_name=field["name"],
-                display_name=field.get("display_name", field["label"].rstrip(":")),
-                var=field["var"],
-                widget=widget,
-                allow_empty=field.get("allow_empty", False),
-                minimum=field.get("min"),
-                maximum=field.get("max"),
-            )
-
-        self.settings_status_label = ttk.Label(
-            settings,
-            textvariable=self.settings_status_var,
-            font=("", 9, "italic"),
-            foreground="#1f6f00",
-        )
-        self.settings_status_label.grid(
-            row=len(settings_fields),
-            column=0,
-            columnspan=3,
-            sticky="w",
-            **subpad,
-        )
-
-        self.gate_open_var.trace_add("write", self._validate_gate_relationship)
-        self.gate_close_var.trace_add("write", self._validate_gate_relationship)
-        self._validate_gate_relationship()
-
-        ttk.Separator(main).grid(row=3, column=0, columnspan=3, sticky="we", pady=(10, 5))
+        ttk.Separator(main).grid(row=2, column=0, columnspan=3, sticky="we", pady=(10, 5))
 
         channels_header = ttk.Frame(main)
-        channels_header.grid(row=4, column=0, columnspan=3, sticky="we", **padding)
+        channels_header.grid(row=3, column=0, columnspan=3, sticky="we", **padding)
         ttk.Label(channels_header, text="Channels", font=("", 11, "bold")).pack(
             side="left"
         )
@@ -1538,14 +1480,15 @@ class MultiChannelApp(tk.Tk):
         )
 
         self.channels_container = ttk.Frame(main)
-        self.channels_container.grid(row=5, column=0, columnspan=3, sticky="nsew")
+        self.channels_container.grid(row=4, column=0, columnspan=3, sticky="nsew")
+        main.rowconfigure(4, weight=1)
 
         add_btn = ttk.Button(main, text="Add Channel", command=self.add_channel)
-        add_btn.grid(row=6, column=0, sticky="w", **padding)
+        add_btn.grid(row=5, column=0, sticky="w", **padding)
 
         self.status_var = tk.StringVar(value="Idle")
         ttk.Label(main, textvariable=self.status_var).grid(
-            row=6, column=1, sticky="e", **padding
+            row=5, column=1, sticky="e", **padding
         )
 
         session_controls = ttk.Frame(main)
