@@ -6,6 +6,7 @@ import contextlib
 import csv
 import importlib
 import json
+import math
 import threading
 import time
 import tkinter as tk
@@ -33,11 +34,23 @@ DEFAULT_TX_GAIN_OVERRIDE = 10.0
 
 
 TRANSMITTER_SETTINGS_PATH = Path(__file__).with_name("transmitter_settings.json")
-APP_ICON_DATA = (
-    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAi0lEQVR42u3aQQ3AIAxAURzMANfp"
-    "mNoJwcwU7A4WCJAA2zt8A+/SNG044pX/XAAAAAAAAAAAAAAAAEBTZ7qnBgAAAAAAVgQYPa4A7Arw"
-    "vLkrAAAAAAAAAAAAAF8FqF12AAAAAACAMQgAAAAAAAAAcBgB4DgKAAAAAABWAPApCgAAAAAAAAAA"
-    "AADAlhVguSZk+11F7QAAAABJRU5ErkJggg=="
+APP_ICON_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAADUklEQVR4nO2WQVIkMQwE5yv7Rh6w"
+    "D9zncGdYH4jgAJjollQlKzNCR7qtqhw3jwcAAAAAAAAAAAAAAMB/Xl/+PO+M+vxwEwQYDgIMBwGG"
+    "gwDDQYDhIMBwEGA4CDAcBBhOZwHU7z8CZwHuns1BUnucw40SACF+wDnMLAGQ4RPOAVYIMF4G59Cq"
+    "BRgpgnNYKgFGieAcklqAERI4B6Quf4QIzsGoSx8hgXMo6sJHiOAchrroERI4B6EueYQEziGoC1bv"
+    "X4JzAOpyHTJIx215dZkuOZThsLi6vNESKJdWF4YED40A6pIcJHj79/f53VzJ9DLVAqjLcZFgnADq"
+    "QtwEWFhIULGougxXCUYIoC5BPbt85BJkLqgO32F2+R8rgDp4p9l1IJUgYzl14Kq5WuRRArj8sjoJ"
+    "sDhCgOrAq3askEB2C0wQoPJ87W6BqBKqy78iQNU5o2+BK3uWBVIVapQAUXtXCpAqwVQBss/d5jOg"
+    "Ks9BgMz923wG1CWqBcjMoMVnQF2igwBZObT4DKhLnCiA1WdAXaKLAFlZIEAjATLysP8/QF0iAnwN"
+    "AogEyMjE+jOgLhEBvgYBEAABVAJE54IACIAACIAACIAACIAACIAACLAv9MrfyBdFAG4ABEAABEAA"
+    "BEAABEAABECAngJEnxMBEAABEAABWgjgUP4CAQYL8N3fIECyABlntL7+s5buKEBl+QgwXIDdWRCg"
+    "WICs89l//zOX7yJAdflW139EAJkhZguQebYW139ECNlBZgmgKN/u+o8IoiLQSAEqztXm+o8IpDrc"
+    "OwI4l79AgCQBKs/U6vqPCCf6eVECVMt4p/yFpPyIoDKe2XXa/fojysp67kmz6+BIASKefcLs8peW"
+    "v8heUF2Aenb5HC9AxDu6zi4XefmLCgEi3tNtfpPJKAGi3tdldjlYlL+oFiDine7zmwxGCxD1bseJ"
+    "6qUMh4XVpY0tf+G2tLpElxzKcF5cXapDBuk4L68uVr1/Cc4BqMs9vvyFcwjqgo8vf+EchLrk48tf"
+    "OIehLvro4j9wDkVd+PHlL5yDUZd+dPEfOAdE+QU4h0TxBTiHRfEFOIdG6QU4B0jpBTiHSeEFdA5X"
+    "/f4j6CwABIAAw0GA4SDAcBBgOAgwHAQYDgIMBwHO5B1YLeBkPKx7vwAAAABJRU5ErkJggg=="
 )
 
 TRANSMITTER_SETTING_FIELDS = [
@@ -1341,7 +1354,12 @@ class MultiChannelApp(tk.Tk):
 
         self._icon_image: Optional[tk.PhotoImage] = None
         try:
-            self._icon_image = tk.PhotoImage(data=APP_ICON_DATA, format="png")
+            icon_source = tk.PhotoImage(data=APP_ICON_BASE64)
+            max_dim = max(icon_source.width(), icon_source.height())
+            if max_dim > 64:
+                factor = math.ceil(max_dim / 64)
+                icon_source = icon_source.subsample(factor, factor)
+            self._icon_image = icon_source
             self.iconphoto(True, self._icon_image)
         except tk.TclError:
             self._icon_image = None
