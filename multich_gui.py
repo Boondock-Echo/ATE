@@ -33,6 +33,12 @@ DEFAULT_TX_GAIN_OVERRIDE = 10.0
 
 
 TRANSMITTER_SETTINGS_PATH = Path(__file__).with_name("transmitter_settings.json")
+APP_ICON_DATA = (
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAi0lEQVR42u3aQQ3AIAxAURzMANfp"
+    "mNoJwcwU7A4WCJAA2zt8A+/SNG044pX/XAAAAAAAAAAAAAAAAEBTZ7qnBgAAAAAAVgQYPa4A7Arw"
+    "vLkrAAAAAAAAAAAAAF8FqF12AAAAAACAMQgAAAAAAAAAcBgB4DgKAAAAAABWAPApCgAAAAAAAAAA"
+    "AADAlhVguSZk+11F7QAAAABJRU5ErkJggg=="
+)
 
 TRANSMITTER_SETTING_FIELDS = [
     dict(
@@ -1332,6 +1338,13 @@ class MultiChannelApp(tk.Tk):
             gate_attack_ms=gate_attack_ms,
             gate_release_ms=gate_release_ms,
         )
+
+        self._icon_image: Optional[tk.PhotoImage] = None
+        try:
+            self._icon_image = tk.PhotoImage(data=APP_ICON_DATA, format="png")
+            self.iconphoto(True, self._icon_image)
+        except tk.TclError:
+            self._icon_image = None
 
         self.device_var = tk.StringVar(value="hackrf")
         self.loop_var = tk.BooleanVar(value=True)
