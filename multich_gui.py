@@ -3,7 +3,6 @@
 
 import argparse
 import contextlib
-import csv
 import importlib
 import json
 import threading
@@ -76,53 +75,42 @@ def _get_mp3_loader():
 
 
 def load_channel_presets() -> List[ChannelPreset]:
-    """Load channel presets from the packaged CSV file."""
+    """Load channel presets from the packaged JSON file."""
 
-    presets_path = Path(__file__).with_name("channel_presets.csv")
-    return load_presets_from_csv(presets_path)
+    presets_path = Path(__file__).with_name("channel_presets.json")
+    return load_presets_from_json(presets_path)
 
 
-def load_presets_from_csv(presets_path: Path) -> List[ChannelPreset]:
-    """Read channel presets from a CSV file at an arbitrary location."""
+def load_presets_from_json(presets_path: Path) -> List[ChannelPreset]:
+    """Read channel presets from a JSON file at an arbitrary location."""
 
     if not presets_path.exists():
         raise FileNotFoundError(
             f"Missing preset file: {presets_path}. Ensure it is packaged with the GUI."
         )
 
-    presets: List[ChannelPreset] = []
-    with presets_path.open(newline="", encoding="utf-8") as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            try:
-                label = row.get("display_name") or row.get("channel_id")
-                frequency = float(row["frequency_hz"]) if row.get("frequency_hz") else None
-                ctcss_val = (
-                    float(row["ctcss_hz"]) if row.get("ctcss_hz") else None
-                )
-                dcs_val_raw = row.get("dcs_code")
-                dcs_val = dcs_val_raw.strip() if dcs_val_raw and dcs_val_raw.strip() else None
-            except (KeyError, ValueError) as exc:
-                raise ValueError(
-                    f"Invalid row in {presets_path}: {row!r}"  # pragma: no cover - configuration issue
-                ) from exc
+    try:
+        with presets_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON in {presets_path}: {exc}"  # pragma: no cover - configuration issue
+        ) from exc
 
-            if label is None or frequency is None:
-                raise ValueError(
-                    f"Incomplete preset definition in {presets_path}: {row!r}"  # pragma: no cover - configuration issue
-                )
-
-            key = row.get("channel_id", label)
-            presets.append(
-                ChannelPreset(
-                    key=str(key),
-                    label=str(label),
-                    frequency_hz=frequency,
-                    ctcss_hz=ctcss_val,
-                    dcs_code=dcs_val,
-                )
+    if isinstance(data, dict):
+        rows = data.get("presets")
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"Invalid preset structure in {presets_path}"  # pragma: no cover - configuration issue
             )
+    elif isinstance(data, list):
+        rows = data
+    else:
+        raise ValueError(
+            f"Invalid preset structure in {presets_path}"  # pragma: no cover - configuration issue
+        )
 
+    presets = rows_to_presets(rows)
     if not presets:
         raise ValueError(
             f"No channel presets were loaded from {presets_path}"  # pragma: no cover - configuration issue
@@ -131,42 +119,40 @@ def load_presets_from_csv(presets_path: Path) -> List[ChannelPreset]:
     return presets
 
 
-def presets_to_rows(presets: Sequence[ChannelPreset]) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
+def presets_to_rows(presets: Sequence[ChannelPreset]) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
     for preset in presets:
         rows.append(
             {
                 "channel_id": preset.key,
                 "display_name": preset.label,
-                "frequency_hz": f"{preset.frequency_hz}",
-                "ctcss_hz": "" if preset.ctcss_hz is None else f"{preset.ctcss_hz}",
-                "dcs_code": preset.dcs_code or "",
+                "frequency_hz": preset.frequency_hz,
+                "ctcss_hz": preset.ctcss_hz,
+                "dcs_code": preset.dcs_code,
             }
         )
     return rows
 
 
-def save_presets_to_csv(presets: Sequence[ChannelPreset], path: Path) -> None:
+def save_presets_to_json(presets: Sequence[ChannelPreset], path: Path) -> None:
     rows = presets_to_rows(presets)
-    with path.open("w", newline="", encoding="utf-8") as csvfile:
-        fieldnames = ["channel_id", "display_name", "frequency_hz", "ctcss_hz", "dcs_code"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(rows, handle, indent=2)
 
 
-def rows_to_presets(rows: Sequence[Dict[str, str]]) -> List[ChannelPreset]:
+def rows_to_presets(rows: Sequence[Dict[str, object]]) -> List[ChannelPreset]:
     presets: List[ChannelPreset] = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         try:
             label = row.get("display_name") or row.get("channel_id")
-            freq_text = row.get("frequency_hz")
-            if label is None or freq_text is None:
+            freq_value = row.get("frequency_hz")
+            if label is None or freq_value is None:
                 continue
-            frequency = float(freq_text)
-            ctcss_text = row.get("ctcss_hz") or ""
-            ctcss = float(ctcss_text) if ctcss_text else None
-            dcs_code = row.get("dcs_code") or None
+            frequency = _coerce_float(freq_value)
+            ctcss = _coerce_optional_float(row.get("ctcss_hz"))
+            dcs_code = _coerce_optional_str(row.get("dcs_code"))
         except (ValueError, TypeError):
             continue
         key = row.get("channel_id") or str(label)
@@ -180,6 +166,34 @@ def rows_to_presets(rows: Sequence[Dict[str, str]]) -> List[ChannelPreset]:
             )
         )
     return presets
+
+
+def _coerce_float(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError("Empty string cannot be converted to float")
+        return float(text)
+    raise TypeError(f"Cannot convert {value!r} to float")
+
+
+def _coerce_optional_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return _coerce_float(value)
+
+
+def _coerce_optional_str(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return str(value)
 
 
 class ChannelRow(ttk.Frame):
@@ -786,7 +800,7 @@ class PresetEditorDialog(simpledialog.Dialog):
 
 
 class PresetManagerDialog(tk.Toplevel):
-    """Dialog that lets the operator manage preset CSV entries."""
+    """Dialog that lets the operator manage preset JSON entries."""
 
     def __init__(self, master, presets: Sequence[ChannelPreset]):
         super().__init__(master)
@@ -894,13 +908,13 @@ class PresetManagerDialog(tk.Toplevel):
     def import_presets(self):  # pragma: no cover - modal UI
         filename = filedialog.askopenfilename(
             parent=self,
-            title="Import preset CSV",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Import preset JSON",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
         )
         if not filename:
             return
         try:
-            imported = load_presets_from_csv(Path(filename))
+            imported = load_presets_from_json(Path(filename))
         except Exception as exc:
             messagebox.showerror("Import failed", str(exc), parent=self)
             return
@@ -914,14 +928,14 @@ class PresetManagerDialog(tk.Toplevel):
             return
         filename = filedialog.asksaveasfilename(
             parent=self,
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
             title="Export presets",
         )
         if not filename:
             return
         try:
-            save_presets_to_csv(self.presets, Path(filename))
+            save_presets_to_json(self.presets, Path(filename))
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc), parent=self)
             return
@@ -1562,13 +1576,13 @@ class MultiChannelApp(tk.Tk):
 
     def import_presets_from_file(self) -> None:
         filename = filedialog.askopenfilename(
-            title="Import preset CSV",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Import preset JSON",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
         )
         if not filename:
             return
         try:
-            presets = load_presets_from_csv(Path(filename))
+            presets = load_presets_from_json(Path(filename))
         except Exception as exc:
             messagebox.showerror("Import failed", str(exc))
             return
@@ -1581,14 +1595,14 @@ class MultiChannelApp(tk.Tk):
             messagebox.showinfo("No presets", "There are no presets to export.")
             return
         filename = filedialog.asksaveasfilename(
-            title="Export preset CSV",
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export preset JSON",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
         )
         if not filename:
             return
         try:
-            save_presets_to_csv(self.presets, Path(filename))
+            save_presets_to_json(self.presets, Path(filename))
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
             return

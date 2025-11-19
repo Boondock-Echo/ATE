@@ -66,9 +66,9 @@ graph TD
 
 ### Channel presets
 
-The GUI reads `channel_presets.csv` (bundled in this repository) to populate
-its channel picker. Edit that CSV to add, rename, or reorder channels for your
-site. Each preset must provide a `frequency_hz` column, and the `display_name`
+The GUI reads `channel_presets.json` (bundled in this repository) to populate
+its channel picker. Edit that JSON to add, rename, or reorder channels for your
+site. Each preset must provide a `frequency_hz` field, and the `display_name`
 is shown in the dropdown list.
 
 ### Dependencies
