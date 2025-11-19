@@ -1,0 +1,13 @@
+{
+  "tx_sample_rate": 8000000.0,
+  "mod_sample_rate": 250000.0,
+  "deviation_hz": 3000.0,
+  "master_scale": 0.6,
+  "ctcss_level": 0.2,
+  "ctcss_deviation": null,
+  "tx_gain_override": 10.0,
+  "gate_open_threshold": 0.015,
+  "gate_close_threshold": 0.014,
+  "gate_attack_ms": 4.0,
+  "gate_release_ms": 200.0
+}
