@@ -91,6 +91,7 @@ class _StubModules:
         blocks_module = types.ModuleType("gnuradio.blocks")
         blocks_module.add_ff = lambda *args, **kwargs: _DummyBlock(*args, **kwargs)
         blocks_module.add_cc = lambda *args, **kwargs: _DummyBlock(*args, **kwargs)
+        blocks_module.multiply_ff = lambda *args, **kwargs: _DummyBlock(*args, **kwargs)
         blocks_module.multiply_const_ff = lambda *args, **kwargs: _DummyBlock(*args, **kwargs)
         blocks_module.multiply_const_cc = lambda *args, **kwargs: _DummyBlock(*args, **kwargs)
         blocks_module.rotator_cc = lambda *args, **kwargs: _DummyBlock(*args, **kwargs)
