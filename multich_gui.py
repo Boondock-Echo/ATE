@@ -23,6 +23,7 @@ from multich_nbfm_tx import (
     DEFAULT_GATE_RELEASE_MS,
     MultiNBFMTx,
 )
+from hackrf_export import HackRFExportChannel, export_hackrf_package
 
 
 DEFAULT_TX_SAMPLE_RATE = 8_000_000
@@ -1439,6 +1440,9 @@ class MultiChannelApp(tk.Tk):
         file_menu = tk.Menu(menubar, tearoff=False)
         file_menu.add_command(label="Save Session…", command=self.save_session)
         file_menu.add_command(label="Load Session…", command=self.load_session)
+        file_menu.add_command(
+            label="Export for HackRF…", command=self.export_hackrf_bundle
+        )
         file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self.on_close)
         menubar.add_cascade(label="File", menu=file_menu)
@@ -1530,6 +1534,11 @@ class MultiChannelApp(tk.Tk):
         ttk.Button(session_controls, text="Load Session…", command=self.load_session).grid(
             row=0, column=1, padx=4
         )
+        ttk.Button(
+            session_controls,
+            text="Export for HackRF…",
+            command=self.export_hackrf_bundle,
+        ).grid(row=0, column=2, padx=4)
 
         button_frame = ttk.Frame(main)
         button_frame.grid(row=7, column=0, columnspan=3, sticky="e", pady=(10, 0))
@@ -1857,6 +1866,93 @@ class MultiChannelApp(tk.Tk):
             return
         self.session_path = Path(filename)
         self._log(f"Loaded session from {self.session_path.name}.")
+
+    def export_hackrf_bundle(self) -> None:
+        self._clear_channel_errors()
+        try:
+            (
+                center_freq,
+                file_groups,
+                offsets,
+                gains,
+                ctcss_tones,
+                dcs_codes,
+            ) = self._collect_channel_data()
+        except ChannelValidationError as exc:
+            if 0 < exc.channel_index <= len(self.channel_rows):
+                self.channel_rows[exc.channel_index - 1].show_error(str(exc))
+            self.status_var.set(f"Channel {exc.channel_index}: {exc}")
+            self.bell()
+            return
+        except ValueError as exc:
+            messagebox.showerror("Invalid configuration", str(exc))
+            return
+
+        try:
+            (
+                tx_sr,
+                mod_sr,
+                deviation,
+                master_scale,
+                ctcss_level,
+                ctcss_deviation,
+                tx_gain_override,
+                gate_open,
+                gate_close,
+                gate_attack,
+                gate_release,
+            ) = self._parse_transmitter_settings()
+        except ValueError as exc:
+            messagebox.showerror("Invalid configuration", str(exc))
+            return
+
+        destination = filedialog.askdirectory(
+            title="Choose export folder for HackRF SD card"
+        )
+        if not destination:
+            return
+
+        channels: List[HackRFExportChannel] = []
+        for idx, (files, offset, gain, ctcss, dcs) in enumerate(
+            zip(file_groups, offsets, gains, ctcss_tones, dcs_codes), start=1
+        ):
+            channels.append(
+                HackRFExportChannel(
+                    index=idx,
+                    frequency_hz=center_freq + offset,
+                    gain=gain,
+                    playlist=files,
+                    ctcss_hz=ctcss,
+                    dcs_code=dcs,
+                )
+            )
+
+        try:
+            manifest_path = export_hackrf_package(
+                Path(destination),
+                channels,
+                center_frequency_hz=center_freq,
+                tx_sample_rate=tx_sr,
+                mod_sample_rate=mod_sr,
+                deviation_hz=deviation,
+                master_scale=master_scale,
+                loop_queue=self.loop_var.get(),
+                ctcss_level=ctcss_level,
+                ctcss_deviation=ctcss_deviation,
+                gate_open_threshold=gate_open,
+                gate_close_threshold=gate_close,
+                gate_attack_ms=gate_attack,
+                gate_release_ms=gate_release,
+            )
+        except Exception as exc:
+            messagebox.showerror("Export failed", str(exc))
+            return
+
+        self._log(f"Exported HackRF package to {Path(destination).name}.")
+        messagebox.showinfo(
+            "Export complete",
+            f"HackRF playlist and audio exported to {manifest_path.parent}.",
+        )
 
     def _serialize_session(self) -> Dict[str, object]:
         return {
