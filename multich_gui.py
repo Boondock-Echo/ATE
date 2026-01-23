@@ -23,7 +23,11 @@ from multich_nbfm_tx import (
     DEFAULT_GATE_RELEASE_MS,
     MultiNBFMTx,
 )
-from hackrf_export import HackRFExportChannel, export_hackrf_package
+from hackrf_export import (
+    HackRFExportChannel,
+    export_hackrf_iq_package,
+    export_hackrf_package,
+)
 
 
 DEFAULT_TX_SAMPLE_RATE = 8_000_000
@@ -32,6 +36,7 @@ DEFAULT_DEVIATION_HZ = 3_000
 DEFAULT_MASTER_SCALE = 0.6
 DEFAULT_CTCSS_LEVEL = 0.20
 DEFAULT_TX_GAIN_OVERRIDE = 10.0
+DEFAULT_IQ_EXPORT_SECONDS = 30.0
 
 
 TRANSMITTER_SETTINGS_PATH = Path(__file__).with_name("transmitter_settings.json")
@@ -235,6 +240,12 @@ def save_transmitter_settings(
         serializable[key] = settings.get(key)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(serializable, handle, indent=2)
+
+
+@dataclass(frozen=True)
+class HackRFExportOptions:
+    mode: str
+    duration_seconds: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -1825,6 +1836,93 @@ class MultiChannelApp(tk.Tk):
             return
         self._log(f"Exported presets to {Path(filename).name}.")
 
+    def _ask_hackrf_export_options(self) -> Optional[HackRFExportOptions]:  # pragma: no cover - modal UI
+        dialog = tk.Toplevel(self)
+        dialog.title("HackRF Export")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        mode_var = tk.StringVar(value="playlist")
+        duration_var = tk.StringVar(value=f"{DEFAULT_IQ_EXPORT_SECONDS:g}")
+        result: Optional[HackRFExportOptions] = None
+
+        def _update_duration_state(*_):
+            state = "normal" if mode_var.get() == "iq" else "disabled"
+            duration_entry.configure(state=state)
+
+        def _cancel():
+            nonlocal result
+            result = None
+            dialog.destroy()
+
+        def _confirm():
+            nonlocal result
+            mode = mode_var.get()
+            if mode == "iq":
+                try:
+                    duration_value = float(duration_var.get())
+                except ValueError:
+                    messagebox.showerror(
+                        "Invalid duration",
+                        "Enter a valid number of seconds for IQ export.",
+                        parent=dialog,
+                    )
+                    return
+                if duration_value <= 0:
+                    messagebox.showerror(
+                        "Invalid duration",
+                        "IQ export duration must be positive.",
+                        parent=dialog,
+                    )
+                    return
+                result = HackRFExportOptions(mode="iq", duration_seconds=duration_value)
+            else:
+                result = HackRFExportOptions(mode="playlist")
+            dialog.destroy()
+
+        body = ttk.Frame(dialog, padding=10)
+        body.grid(row=0, column=0)
+        body.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            body,
+            text="Choose HackRF export format:",
+            font=("", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        ttk.Radiobutton(
+            body,
+            text="Export playlist + audio",
+            variable=mode_var,
+            value="playlist",
+            command=_update_duration_state,
+        ).grid(row=1, column=0, columnspan=2, sticky="w")
+
+        ttk.Radiobutton(
+            body,
+            text="Export IQ (PortaPack Replay)",
+            variable=mode_var,
+            value="iq",
+            command=_update_duration_state,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        ttk.Label(body, text="IQ duration (seconds):").grid(
+            row=3, column=0, sticky="w", pady=(8, 0)
+        )
+        duration_entry = ttk.Entry(body, textvariable=duration_var, width=10)
+        duration_entry.grid(row=3, column=1, sticky="w", pady=(8, 0))
+
+        _update_duration_state()
+
+        button_row = ttk.Frame(body)
+        button_row.grid(row=4, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(button_row, text="Cancel", command=_cancel).pack(side="right", padx=5)
+        ttk.Button(button_row, text="Export", command=_confirm).pack(side="right")
+
+        dialog.wait_window()
+        return result
+
     def save_session(self) -> None:
         filename = filedialog.asksaveasfilename(
             title="Save session",
@@ -1869,6 +1967,9 @@ class MultiChannelApp(tk.Tk):
 
     def export_hackrf_bundle(self) -> None:
         self._clear_channel_errors()
+        options = self._ask_hackrf_export_options()
+        if options is None:
+            return
         try:
             (
                 center_freq,
@@ -1928,22 +2029,41 @@ class MultiChannelApp(tk.Tk):
             )
 
         try:
-            manifest_path = export_hackrf_package(
-                Path(destination),
-                channels,
-                center_frequency_hz=center_freq,
-                tx_sample_rate=tx_sr,
-                mod_sample_rate=mod_sr,
-                deviation_hz=deviation,
-                master_scale=master_scale,
-                loop_queue=self.loop_var.get(),
-                ctcss_level=ctcss_level,
-                ctcss_deviation=ctcss_deviation,
-                gate_open_threshold=gate_open,
-                gate_close_threshold=gate_close,
-                gate_attack_ms=gate_attack,
-                gate_release_ms=gate_release,
-            )
+            if options.mode == "iq":
+                manifest_path = export_hackrf_iq_package(
+                    Path(destination),
+                    channels,
+                    center_frequency_hz=center_freq,
+                    tx_sample_rate=tx_sr,
+                    mod_sample_rate=mod_sr,
+                    deviation_hz=deviation,
+                    master_scale=master_scale,
+                    loop_queue=self.loop_var.get(),
+                    duration_seconds=options.duration_seconds or DEFAULT_IQ_EXPORT_SECONDS,
+                    ctcss_level=ctcss_level,
+                    ctcss_deviation=ctcss_deviation,
+                    gate_open_threshold=gate_open,
+                    gate_close_threshold=gate_close,
+                    gate_attack_ms=gate_attack,
+                    gate_release_ms=gate_release,
+                )
+            else:
+                manifest_path = export_hackrf_package(
+                    Path(destination),
+                    channels,
+                    center_frequency_hz=center_freq,
+                    tx_sample_rate=tx_sr,
+                    mod_sample_rate=mod_sr,
+                    deviation_hz=deviation,
+                    master_scale=master_scale,
+                    loop_queue=self.loop_var.get(),
+                    ctcss_level=ctcss_level,
+                    ctcss_deviation=ctcss_deviation,
+                    gate_open_threshold=gate_open,
+                    gate_close_threshold=gate_close,
+                    gate_attack_ms=gate_attack,
+                    gate_release_ms=gate_release,
+                )
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
             return
@@ -1951,7 +2071,7 @@ class MultiChannelApp(tk.Tk):
         self._log(f"Exported HackRF package to {Path(destination).name}.")
         messagebox.showinfo(
             "Export complete",
-            f"HackRF playlist and audio exported to {manifest_path.parent}.",
+            f"HackRF export written to {manifest_path.parent}.",
         )
 
     def _serialize_session(self) -> Dict[str, object]:

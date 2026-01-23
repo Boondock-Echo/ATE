@@ -45,6 +45,8 @@ DEFAULT_GATE_OPEN_THRESHOLD = 0.015
 DEFAULT_GATE_CLOSE_THRESHOLD = 0.014
 DEFAULT_GATE_ATTACK_MS = 4.0
 DEFAULT_GATE_RELEASE_MS = 200.0
+HACKRF_IQ_SAMPLE_FORMAT = "int8_iq"
+HACKRF_IQ_SCALE = 127.0
 
 
 class QueuedAudioSource(gr.sync_block):
@@ -963,6 +965,143 @@ class MultiNBFMTx(gr.top_block):
 
         for line in self.configuration_summary_lines():
             print(line, file=file)
+
+
+def render_composite_iq_file(
+    destination: Path,
+    file_groups: Sequence[Sequence[Path]],
+    offsets: Sequence[float],
+    *,
+    tx_sample_rate: float,
+    mod_sample_rate: float,
+    deviation_hz: float,
+    master_scale: float,
+    loop_queue: bool,
+    duration_seconds: float,
+    channel_gains: Optional[Sequence[float]] = None,
+    ctcss_tones: Optional[Sequence[Optional[float]]] = None,
+    ctcss_level: float = 0.35,
+    ctcss_deviation: Optional[float] = None,
+    dcs_codes: Optional[Sequence[Optional[str]]] = None,
+    gate_open_threshold: float = DEFAULT_GATE_OPEN_THRESHOLD,
+    gate_close_threshold: Optional[float] = DEFAULT_GATE_CLOSE_THRESHOLD,
+    gate_attack_ms: float = DEFAULT_GATE_ATTACK_MS,
+    gate_release_ms: float = DEFAULT_GATE_RELEASE_MS,
+) -> Path:
+    """Render a bounded IQ recording of the multichannel composite signal.
+
+    The IQ output is signed 8-bit interleaved (I,Q) samples suitable for
+    HackRF/PortaPack replay. The sample rate is the TX sample rate used when
+    transmitting live.
+    """
+
+    if duration_seconds <= 0:
+        raise ValueError("duration_seconds must be positive for IQ export")
+    if tx_sample_rate <= 0:
+        raise ValueError("tx_sample_rate must be positive for IQ export")
+
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if len(file_groups) != len(offsets):
+        raise ValueError("The number of file queues must match the number of offsets")
+
+    if channel_gains is not None and len(channel_gains) != len(file_groups):
+        raise ValueError("--channel-gains must include one value per channel")
+    gains_list = list(channel_gains) if channel_gains is not None else None
+
+    num_channels = len(file_groups)
+    if ctcss_tones is None:
+        ctcss_list: List[Optional[float]] = [None] * num_channels
+    else:
+        tones_seq = list(ctcss_tones)
+        if len(tones_seq) == 1 and num_channels > 1:
+            tones_seq.extend([None] * (num_channels - 1))
+        elif len(tones_seq) != num_channels:
+            raise ValueError("--ctcss-tones must include one value per channel")
+        ctcss_list = [float(tone) if tone is not None else None for tone in tones_seq]
+
+    has_any_ctcss = any(tone is not None for tone in ctcss_list)
+    effective_ctcss_level = float(ctcss_level)
+    if has_any_ctcss and effective_ctcss_level <= 0:
+        raise ValueError("--ctcss-level must be positive when CTCSS is enabled")
+    if ctcss_deviation is not None:
+        if ctcss_deviation <= 0:
+            raise ValueError("--ctcss-deviation must be positive when provided")
+        if deviation_hz <= 0:
+            raise ValueError("Deviation must be positive when using --ctcss-deviation")
+        effective_ctcss_level = float(ctcss_deviation) / float(deviation_hz)
+
+    if dcs_codes is None:
+        dcs_list: List[Optional[str]] = [None] * num_channels
+    else:
+        if len(dcs_codes) != num_channels:
+            raise ValueError("--dcs-codes must include one value per channel")
+        dcs_list = [str(code).strip() or None if code is not None else None for code in dcs_codes]
+
+    if not file_groups:
+        raise ValueError("At least one channel must be specified for IQ export")
+
+    tb = gr.top_block("MultiNBFM IQ Renderer")
+    channels: List[gr.hier_block2] = []
+    adders: List[blocks.add_cc] = []
+    for idx, (wavs, off) in enumerate(zip(file_groups, offsets)):
+        gain = gains_list[idx] if gains_list is not None else 1.0
+        ctcss = ctcss_list[idx]
+        dcs = dcs_list[idx]
+        if ctcss is not None and dcs is not None:
+            raise ValueError(
+                f"Channel {idx + 1} cannot enable both CTCSS and DCS simultaneously"
+            )
+        channel = NBFMChannel(
+            wav_paths=wavs,
+            deviation=deviation_hz,
+            mod_sr=mod_sample_rate,
+            tx_sr=tx_sample_rate,
+            freq_offset=off,
+            audio_gain=gain,
+            loop_queue=loop_queue,
+            ctcss_hz=ctcss,
+            ctcss_level=effective_ctcss_level,
+            dcs_code=dcs,
+            gate_open_threshold=gate_open_threshold,
+            gate_close_threshold=gate_close_threshold,
+            gate_attack_ms=gate_attack_ms,
+            gate_release_ms=gate_release_ms,
+        )
+        channels.append(channel)
+
+    if len(channels) == 1:
+        summer = channels[0]
+    else:
+        current = channels[0]
+        for ch in channels[1:]:
+            adder = blocks.add_cc()
+            adders.append(adder)
+            tb.connect(current, (adder, 0))
+            tb.connect(ch, (adder, 1))
+            current = adder
+        summer = current
+
+    if gains_list is None:
+        total_gain = float(len(channels))
+    else:
+        total_gain = float(sum(abs(g) for g in gains_list))
+        if total_gain <= 0:
+            total_gain = float(len(channels))
+
+    scale = blocks.multiply_const_cc(master_scale / max(1.0, total_gain))
+    num_samples = int(round(duration_seconds * tx_sample_rate))
+    head = blocks.head(gr.sizeof_gr_complex, num_samples)
+    iq_scale = blocks.multiply_const_cc(HACKRF_IQ_SCALE)
+    converter = blocks.complex_to_interleaved_char()
+    sink = blocks.file_sink(gr.sizeof_char, str(destination), False)
+    sink.set_unbuffered(True)
+
+    tb.connect(summer, scale, head, iq_scale, converter, sink)
+    tb.run()
+
+    return destination
 
 def _parse_file_groups(file_args: Sequence[str]) -> List[List[Path]]:
     groups: List[List[Path]] = []
