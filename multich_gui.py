@@ -23,6 +23,8 @@ from multich_nbfm_tx import (
     DEFAULT_GATE_OPEN_THRESHOLD,
     DEFAULT_GATE_RELEASE_MS,
     MultiNBFMTx,
+    discover_plutoplussdr_hosts,
+    format_plutoplussdr_feedback,
 )
 from hackrf_export import (
     HackRFExportChannel,
@@ -1388,6 +1390,7 @@ class MultiChannelApp(tk.Tk):
             self._icon_image = None
 
         self.device_var = tk.StringVar(value="hackrf")
+        self.device_feedback_var = tk.StringVar(value="")
         self.loop_var = tk.BooleanVar(value=True)
         self.tx_sr_var = tk.StringVar()
         self.mod_sr_var = tk.StringVar()
@@ -1417,6 +1420,7 @@ class MultiChannelApp(tk.Tk):
 
         self._build_menu()
         self._build_layout()
+        self._update_device_feedback()
         self.add_channel()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._log("Application initialized.")
@@ -1510,6 +1514,17 @@ class MultiChannelApp(tk.Tk):
             state="readonly",
         )
         device_combo.grid(row=0, column=1, sticky="we", **padding)
+        self.device_var.trace_add("write", self._on_device_change)
+
+        self.device_feedback_label = ttk.Label(
+            main,
+            textvariable=self.device_feedback_var,
+            foreground="#555555",
+            font=("", 9),
+            wraplength=360,
+            justify="left",
+        )
+        self.device_feedback_label.grid(row=1, column=0, columnspan=2, sticky="w", **padding)
 
         ttk.Button(main, text="Manage Presets…", command=self.open_preset_manager).grid(
             row=0, column=2, sticky="e", **padding
@@ -1519,12 +1534,12 @@ class MultiChannelApp(tk.Tk):
             main,
             text="Loop queued audio",
             variable=self.loop_var,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", **padding)
+        ).grid(row=2, column=0, columnspan=2, sticky="w", **padding)
 
-        ttk.Separator(main).grid(row=2, column=0, columnspan=3, sticky="we", pady=(10, 5))
+        ttk.Separator(main).grid(row=3, column=0, columnspan=3, sticky="we", pady=(10, 5))
 
         channels_header = ttk.Frame(main)
-        channels_header.grid(row=3, column=0, columnspan=3, sticky="we", **padding)
+        channels_header.grid(row=4, column=0, columnspan=3, sticky="we", **padding)
         ttk.Label(channels_header, text="Channels", font=("", 11, "bold")).pack(
             side="left"
         )
@@ -1538,19 +1553,18 @@ class MultiChannelApp(tk.Tk):
         )
 
         self.channels_container = ttk.Frame(main)
-        self.channels_container.grid(row=4, column=0, columnspan=3, sticky="nsew")
-        main.rowconfigure(4, weight=1)
+        self.channels_container.grid(row=5, column=0, columnspan=3, sticky="nsew")
 
         add_btn = ttk.Button(main, text="Add Channel", command=self.add_channel)
-        add_btn.grid(row=5, column=0, sticky="w", **padding)
+        add_btn.grid(row=6, column=0, sticky="w", **padding)
 
         self.status_var = tk.StringVar(value="Idle")
         ttk.Label(main, textvariable=self.status_var).grid(
-            row=5, column=1, sticky="e", **padding
+            row=6, column=1, sticky="e", **padding
         )
 
         session_controls = ttk.Frame(main)
-        session_controls.grid(row=6, column=2, sticky="e", **padding)
+        session_controls.grid(row=7, column=2, sticky="e", **padding)
         ttk.Button(session_controls, text="Save Session…", command=self.save_session).grid(
             row=0, column=0, padx=4
         )
@@ -1569,7 +1583,7 @@ class MultiChannelApp(tk.Tk):
         ).grid(row=0, column=3, padx=4)
 
         button_frame = ttk.Frame(main)
-        button_frame.grid(row=7, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        button_frame.grid(row=8, column=0, columnspan=3, sticky="e", pady=(10, 0))
         self.start_button = ttk.Button(button_frame, text="Start", command=self.start_transmission)
         self.start_button.grid(row=0, column=0, padx=5)
         self.stop_button = ttk.Button(
@@ -1579,10 +1593,10 @@ class MultiChannelApp(tk.Tk):
         self.tx_progress = ttk.Progressbar(button_frame, mode="indeterminate", length=180)
         self.tx_progress.grid(row=0, column=2, padx=5)
 
-        ttk.Separator(main).grid(row=8, column=0, columnspan=3, sticky="we", pady=(10, 5))
+        ttk.Separator(main).grid(row=9, column=0, columnspan=3, sticky="we", pady=(10, 5))
 
         log_section = ttk.LabelFrame(main, text="Transmission Log")
-        log_section.grid(row=9, column=0, columnspan=3, sticky="nsew", **padding)
+        log_section.grid(row=10, column=0, columnspan=3, sticky="nsew", **padding)
         log_section.columnconfigure(0, weight=1)
         log_section.rowconfigure(0, weight=1)
         self.log_text = tk.Text(log_section, height=10, wrap="word", state="disabled")
@@ -1595,7 +1609,7 @@ class MultiChannelApp(tk.Tk):
         main.columnconfigure(0, weight=0)
         main.columnconfigure(2, weight=0)
         main.rowconfigure(5, weight=2)
-        main.rowconfigure(9, weight=1)
+        main.rowconfigure(10, weight=1)
 
     def add_channel(self, state: Optional[Dict[str, str]] = None) -> ChannelRow:
         section = CollapsibleSection(self.channels_container, title="")
@@ -2509,6 +2523,7 @@ class MultiChannelApp(tk.Tk):
     def start_transmission(self) -> None:
         if self.running:
             return
+        self._update_device_feedback()
         self._clear_channel_errors()
         self.status_var.set("Validating configuration…")
         if self._setting_errors:
@@ -2656,6 +2671,19 @@ class MultiChannelApp(tk.Tk):
             self.after(200, self._close_when_idle)
         else:
             self.destroy()
+
+    def _on_device_change(self, *_ignored) -> None:
+        self._update_device_feedback()
+
+    def _update_device_feedback(self) -> None:
+        device = self.device_var.get().strip().lower()
+        if device not in {"plutoplussdr", "plutoplus", "pluto+"}:
+            self.device_feedback_var.set("")
+            return
+        addresses = discover_plutoplussdr_hosts()
+        message = format_plutoplussdr_feedback(addresses)
+        self.device_feedback_var.set(message)
+        self._log(message)
 
     def _log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")

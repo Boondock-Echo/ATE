@@ -24,6 +24,10 @@
 import argparse
 import audioop
 import math
+import re
+import shutil
+import socket
+import subprocess
 import time
 import wave
 from fractions import Fraction
@@ -47,6 +51,58 @@ DEFAULT_GATE_ATTACK_MS = 4.0
 DEFAULT_GATE_RELEASE_MS = 200.0
 HACKRF_IQ_SAMPLE_FORMAT = "int8_iq"
 HACKRF_IQ_SCALE = 127.0
+PLUTOPLUS_HOSTNAMES = ("plutoplussdr.local", "plutoplus.local")
+IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
+def _run_iio_info_scan() -> Optional[str]:
+    executable = shutil.which("iio_info")
+    if executable is None:
+        return None
+    try:
+        result = subprocess.run(
+            [executable, "-s"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    output = (result.stdout or "").strip()
+    return output or None
+
+
+def discover_plutoplussdr_hosts() -> List[str]:
+    """Return discovered PlutoPlus SDR IPv4 addresses (best effort)."""
+
+    addresses: set[str] = set()
+    iio_output = _run_iio_info_scan()
+    if iio_output:
+        for line in iio_output.splitlines():
+            if "pluto" not in line.casefold():
+                continue
+            for match in IPV4_RE.findall(line):
+                addresses.add(match)
+
+    for hostname in PLUTOPLUS_HOSTNAMES:
+        try:
+            resolved = socket.gethostbyname(hostname)
+        except socket.gaierror:
+            continue
+        if resolved:
+            addresses.add(resolved)
+
+    return sorted(addresses)
+
+
+def format_plutoplussdr_feedback(addresses: Sequence[str]) -> str:
+    if not addresses:
+        return "No PlutoPlus SDRs detected on the network."
+    if len(addresses) == 1:
+        return f"PlutoPlus SDR detected at {addresses[0]}."
+    joined = ", ".join(addresses)
+    return f"Detected {len(addresses)} PlutoPlus SDRs at {joined}."
 
 
 class QueuedAudioSource(gr.sync_block):
@@ -1338,6 +1394,9 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.device.lower() in {"plutoplussdr", "plutoplus", "pluto+"}:
+        addresses = discover_plutoplussdr_hosts()
+        print(format_plutoplussdr_feedback(addresses))
     tb = MultiNBFMTx(
         device=args.device,
         center_freq=args.fc,
