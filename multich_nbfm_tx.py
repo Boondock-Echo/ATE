@@ -21,9 +21,14 @@
 #       --files patrol.wav announcements.wav \
 #       --offsets -125e2 125e2 --tx-sr 4e6 --tx-gain -10 --no-loop-queue
 #
+#   python3 multich_nbfm_tx.py --device plutoplussdr --pluto-ip 192.168.2.10 --fc 462.6e6 \
+#       --files patrol.wav announcements.wav --offsets -125e2 125e2 --tx-sr 4e6 --tx-gain -10
+#
 import argparse
 import audioop
+import ipaddress
 import math
+import re
 import time
 import wave
 from fractions import Fraction
@@ -45,6 +50,9 @@ DEFAULT_GATE_OPEN_THRESHOLD = 0.015
 DEFAULT_GATE_CLOSE_THRESHOLD = 0.014
 DEFAULT_GATE_ATTACK_MS = 4.0
 DEFAULT_GATE_RELEASE_MS = 200.0
+
+_IP_KV_RE = re.compile(r"(?:^|[,\s])(?:ip|addr|hostname)=(?P<value>[^,\s]+)")
+_IP_COLON_RE = re.compile(r"ip:(?P<value>[^,\s]+)")
 
 
 class QueuedAudioSource(gr.sync_block):
@@ -732,6 +740,7 @@ class MultiNBFMTx(gr.top_block):
         center_freq: float,
         file_groups: Sequence[Sequence[Path]],
         offsets: Sequence[float],
+        device_args: Optional[str] = None,
         tx_sr: float = 8e6,
         tx_gain: float = 0.0,
         deviation: float = 3e3,
@@ -753,6 +762,12 @@ class MultiNBFMTx(gr.top_block):
 
         self._device = device
         self._center_freq = float(center_freq)
+        self._device_args = str(device_args) if device_args else None
+        self._ip_target = (
+            _normalize_ip_target(_extract_ip_target(self._device_args))
+            if self._device_args
+            else None
+        )
         self._tx_sr = float(tx_sr)
         self._tx_gain = float(tx_gain)
         self._deviation = float(deviation)
@@ -871,7 +886,7 @@ class MultiNBFMTx(gr.top_block):
         self.scale = blocks.multiply_const_cc(master_scale / max(1.0, total_gain))
 
         # SDR sink
-        self.sink = osmosdr.sink()
+        self.sink = osmosdr.sink(self._device_args) if self._device_args else osmosdr.sink()
         device_lower = device.lower()
         if device_lower == "hackrf":
             # HackRF typical stable rates 8–10 Msps for this use
@@ -910,9 +925,16 @@ class MultiNBFMTx(gr.top_block):
     def configuration_summary_lines(self) -> List[str]:
         lines: List[str] = []
         lines.append("MultiNBFMTx configuration summary:")
-        lines.append(
+        device_line = (
             f"  Device={self._device} fc={self._center_freq/1e6:.6f} MHz tx_sr={self._tx_sr/1e6:.3f} Msps"
         )
+        if self._device_args:
+            device_line += f" device_args={self._device_args}"
+        lines.append(device_line)
+        if self._ip_target:
+            lines.append(f"  Connection=IP target={self._ip_target}")
+        elif self._device.lower() in {"pluto", "plutoplus", "pluto+", "plutoplussdr"}:
+            lines.append("  Connection=USB (no IP target specified)")
         lines.append(
             f"  mod_sr={self._mod_sr/1e3:.1f} ksps deviation=±{self._deviation:.0f} Hz master_scale={self._master_scale:.2f}"
         )
@@ -974,6 +996,25 @@ def _parse_file_groups(file_args: Sequence[str]) -> List[List[Path]]:
     return groups
 
 
+def _extract_ip_target(device_args: Optional[str]) -> Optional[str]:
+    if not device_args:
+        return None
+    match = _IP_KV_RE.search(device_args)
+    if match:
+        return match.group("value")
+    match = _IP_COLON_RE.search(device_args)
+    if match:
+        return match.group("value")
+    return None
+
+
+def _normalize_ip_target(target: str) -> str:
+    try:
+        return str(ipaddress.ip_address(target))
+    except ValueError:
+        return target
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Multi-channel NBFM transmitter for HackRF, Pluto, and PlutoPlus"
@@ -984,6 +1025,18 @@ def parse_args():
         default="hackrf",
         choices=["hackrf", "pluto", "plutoplus", "pluto+", "plutoplussdr"],
         help="SDR to use via osmosdr",
+    )
+    p.add_argument(
+        "--device-args",
+        type=str,
+        default=None,
+        help="Raw osmosdr device arguments string (e.g., 'pluto=ip:192.168.2.1')",
+    )
+    p.add_argument(
+        "--pluto-ip",
+        type=str,
+        default=None,
+        help="Pluto/PlutoPlus SDR IP address (builds device args as 'pluto=ip:<addr>')",
     )
     p.add_argument("--fc", type=float, required=True, help="Center frequency (Hz)")
     p.add_argument("--tx-sr", type=float, default=8e6, help="TX sample rate (Hz)")
@@ -1195,6 +1248,13 @@ def parse_args():
     if args.gate_release_ms < 0:
         p.error("--gate-release-ms must be non-negative")
 
+    if args.device_args and args.pluto_ip:
+        p.error("--device-args and --pluto-ip cannot be used together")
+    if args.pluto_ip:
+        if args.device.lower() not in {"pluto", "plutoplus", "pluto+", "plutoplussdr"}:
+            p.error("--pluto-ip is only valid with --device pluto or plutoplus")
+        args.device_args = f"pluto=ip:{args.pluto_ip}"
+
     return args
 
 if __name__ == "__main__":
@@ -1204,6 +1264,7 @@ if __name__ == "__main__":
         center_freq=args.fc,
         file_groups=args.file_groups,
         offsets=args.offsets,
+        device_args=args.device_args,
         tx_sr=args.tx_sr,
         tx_gain=args.tx_gain,
         deviation=args.deviation,
