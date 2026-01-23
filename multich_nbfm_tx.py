@@ -24,6 +24,7 @@
 import argparse
 import audioop
 import getpass
+import logging
 import math
 import os
 import shutil
@@ -42,6 +43,7 @@ import numpy as np
 import osmosdr
 from gnuradio import analog, blocks, filter, gr
 from gnuradio.filter import firdes, window
+from logging_utils import resolve_log_path, setup_logging
 from path_utils import resolve_config_file, resolve_data_file
 
 
@@ -50,6 +52,7 @@ DEFAULT_GATE_CLOSE_THRESHOLD = 0.014
 DEFAULT_GATE_ATTACK_MS = 4.0
 DEFAULT_GATE_RELEASE_MS = 200.0
 APP_NAME = "ate"
+LOGGER = logging.getLogger("multich_nbfm_tx")
 
 
 def _format_id(value: Optional[int]) -> str:
@@ -68,29 +71,29 @@ def _get_user_identity() -> str:
 def _log_startup_environment(args: argparse.Namespace) -> None:
     config_path = resolve_config_file(APP_NAME, "transmitter_settings.json")
     data_path = resolve_data_file(APP_NAME, "channel_presets.csv")
-    print("Startup environment:")
-    print(f"  Identity: {_get_user_identity()}")
-    print(f"  CWD: {Path.cwd()}")
-    print(f"  PATH: {os.environ.get('PATH', '')}")
-    print(f"  Config path: {config_path}")
-    print(f"  Data path: {data_path}")
-    print("  CLI args:")
-    print(f"    device={args.device}")
-    print(f"    fc={args.fc}")
-    print(f"    tx_sr={args.tx_sr}")
-    print(f"    tx_gain={args.tx_gain}")
-    print(f"    deviation={args.deviation}")
-    print(f"    mod_sr={args.mod_sr}")
-    print(f"    audio_sr={args.audio_sr}")
-    print(f"    files={args.files}")
-    print(f"    freqs={args.freqs}")
-    print(f"    offsets={args.offsets}")
-    print(f"    loop_queue={args.loop_queue}")
-    print(f"    channel_gains={args.channel_gains}")
-    print(f"    ctcss_tones={args.ctcss_tones}")
-    print(f"    ctcss_level={args.ctcss_level}")
-    print(f"    ctcss_deviation={args.ctcss_deviation}")
-    print(f"    dcs_codes={args.dcs_codes}")
+    LOGGER.info("Startup environment:")
+    LOGGER.info("  Identity: %s", _get_user_identity())
+    LOGGER.info("  CWD: %s", Path.cwd())
+    LOGGER.info("  PATH: %s", os.environ.get("PATH", ""))
+    LOGGER.info("  Config path: %s", config_path)
+    LOGGER.info("  Data path: %s", data_path)
+    LOGGER.info("  CLI args:")
+    LOGGER.info("    device=%s", args.device)
+    LOGGER.info("    fc=%s", args.fc)
+    LOGGER.info("    tx_sr=%s", args.tx_sr)
+    LOGGER.info("    tx_gain=%s", args.tx_gain)
+    LOGGER.info("    deviation=%s", args.deviation)
+    LOGGER.info("    mod_sr=%s", args.mod_sr)
+    LOGGER.info("    audio_sr=%s", args.audio_sr)
+    LOGGER.info("    files=%s", args.files)
+    LOGGER.info("    freqs=%s", args.freqs)
+    LOGGER.info("    offsets=%s", args.offsets)
+    LOGGER.info("    loop_queue=%s", args.loop_queue)
+    LOGGER.info("    channel_gains=%s", args.channel_gains)
+    LOGGER.info("    ctcss_tones=%s", args.ctcss_tones)
+    LOGGER.info("    ctcss_level=%s", args.ctcss_level)
+    LOGGER.info("    ctcss_deviation=%s", args.ctcss_deviation)
+    LOGGER.info("    dcs_codes=%s", args.dcs_codes)
 
 
 def _verify_dependencies(args: argparse.Namespace) -> None:
@@ -1175,6 +1178,12 @@ def parse_args():
         help="Audio gate release time in milliseconds.",
     )
     p.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Optional log file path or filename.",
+    )
+    p.add_argument(
         "--loop-queue",
         dest="loop_queue",
         action="store_true",
@@ -1275,6 +1284,8 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    log_path = resolve_log_path(APP_NAME, args.log_file, "multich_nbfm_tx.log")
+    setup_logging("multich_nbfm_tx", log_file=log_path)
     _verify_dependencies(args)
     _log_startup_environment(args)
     tb = MultiNBFMTx(
@@ -1300,11 +1311,40 @@ if __name__ == "__main__":
         gate_release_ms=args.gate_release_ms,
     )
     tb.print_configuration_summary()
+    LOGGER.info(
+        "Transmission start: device=%s center_freq_hz=%s tx_sr=%s tx_gain=%s deviation_hz=%s mod_sr=%s audio_sr=%s loop_queue=%s",
+        args.device,
+        args.fc,
+        args.tx_sr,
+        args.tx_gain,
+        args.deviation,
+        args.mod_sr,
+        args.audio_sr,
+        args.loop_queue,
+    )
+    started = False
     try:
         tb.start()
-        print("Transmitting... Press Ctrl-C to stop.")
+        started = True
+        LOGGER.info("Transmitting... Press Ctrl-C to stop.")
         while True:
             time.sleep(10)
     except KeyboardInterrupt:
-        tb.stop()
-        tb.wait()
+        LOGGER.info("Transmission interrupted by user.")
+    except Exception:
+        LOGGER.exception(
+            "Transmission failed: device=%s center_freq_hz=%s tx_sr=%s tx_gain=%s deviation_hz=%s mod_sr=%s audio_sr=%s loop_queue=%s",
+            args.device,
+            args.fc,
+            args.tx_sr,
+            args.tx_gain,
+            args.deviation,
+            args.mod_sr,
+            args.audio_sr,
+            args.loop_queue,
+        )
+        raise
+    finally:
+        if started:
+            tb.stop()
+            tb.wait()
