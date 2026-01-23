@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import sys
 import math
 from array import array
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, List, Sequence, Tuple
 
-from path_utils import ensure_directory, resolve_log_file
+from path_utils import atomic_write, ensure_directory, resolve_log_file
 
 try:  # pragma: no cover - optional dependency for MP3 files
     import audioread
@@ -219,9 +220,8 @@ def _write_csv(rows: Sequence[AudioActivitySummary], output: Path | None) -> Non
         "duty_cycle_percent",
     ]
 
-    handle = sys.stdout if output is None else output.open("w", newline="", encoding="utf-8")
-    try:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+    if output is None:
+        writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(
@@ -233,9 +233,22 @@ def _write_csv(rows: Sequence[AudioActivitySummary], output: Path | None) -> Non
                     "duty_cycle_percent": f"{row.duty_cycle_percent:.2f}",
                 }
             )
-    finally:
-        if output is not None:
-            handle.close()
+        return
+
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(
+            {
+                "path": str(row.path),
+                "sample_rate_hz": row.sample_rate,
+                "duration_seconds": f"{row.duration_seconds:.3f}",
+                "active_seconds": f"{row.active_seconds:.3f}",
+                "duty_cycle_percent": f"{row.duty_cycle_percent:.2f}",
+            }
+        )
+    atomic_write(output, buffer.getvalue())
 
 
 def main() -> None:  # pragma: no cover - CLI wrapper

@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import csv
 import importlib
+import io
 import json
 import math
 import threading
@@ -24,7 +25,12 @@ from multich_nbfm_tx import (
     MultiNBFMTx,
 )
 from hackrf_export import HackRFExportChannel, export_hackrf_package
-from path_utils import ensure_directory, resolve_config_file, resolve_data_file
+from path_utils import (
+    atomic_write,
+    ensure_directory,
+    resolve_config_file,
+    resolve_data_file,
+)
 
 
 DEFAULT_TX_SAMPLE_RATE = 8_000_000
@@ -236,9 +242,7 @@ def save_transmitter_settings(
     serializable: Dict[str, Optional[float]] = {}
     for key in DEFAULT_TRANSMITTER_SETTINGS.keys():
         serializable[key] = settings.get(key)
-    ensure_directory(path.parent)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(serializable, handle, indent=2)
+    atomic_write(path, json.dumps(serializable, indent=2))
 
 
 @dataclass(frozen=True)
@@ -368,11 +372,12 @@ def presets_to_rows(presets: Sequence[ChannelPreset]) -> List[Dict[str, str]]:
 
 def save_presets_to_csv(presets: Sequence[ChannelPreset], path: Path) -> None:
     rows = presets_to_rows(presets)
-    with path.open("w", newline="", encoding="utf-8") as csvfile:
-        fieldnames = ["channel_id", "display_name", "frequency_hz", "ctcss_hz", "dcs_code"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    buffer = io.StringIO(newline="")
+    fieldnames = ["channel_id", "display_name", "frequency_hz", "ctcss_hz", "dcs_code"]
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    atomic_write(path, buffer.getvalue())
 
 
 def rows_to_presets(rows: Sequence[Dict[str, str]]) -> List[ChannelPreset]:
@@ -1855,8 +1860,7 @@ class MultiChannelApp(tk.Tk):
             return
         data = self._serialize_session()
         try:
-            with open(filename, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=2)
+            atomic_write(Path(filename), json.dumps(data, indent=2))
         except OSError as exc:
             messagebox.showerror("Save failed", str(exc))
             return
