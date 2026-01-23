@@ -10,6 +10,7 @@ import json
 import math
 import os
 import getpass
+import logging
 import threading
 import time
 import tkinter as tk
@@ -27,6 +28,7 @@ from multich_nbfm_tx import (
     MultiNBFMTx,
 )
 from hackrf_export import HackRFExportChannel, export_hackrf_package
+from logging_utils import resolve_log_path, setup_logging
 from path_utils import (
     atomic_write,
     ensure_directory,
@@ -46,6 +48,7 @@ DEFAULT_TX_GAIN_OVERRIDE = 10.0
 APP_NAME = "ate"
 DEFAULT_PRESETS_PATH = Path(__file__).with_name("channel_presets.csv")
 TRANSMITTER_SETTINGS_PATH = resolve_config_file(APP_NAME, "transmitter_settings.json")
+LOGGER = logging.getLogger("multich_gui")
 APP_ICON_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAADUklEQVR4nO2WQVIkMQwE5yv7Rh6w"
     "D9zncGdYH4jgAJjollQlKzNCR7qtqhw3jwcAAAAAAAAAAAAAAMB/Xl/+PO+M+vxwEwQYDgIMBwGG"
@@ -1357,11 +1360,13 @@ class MultiChannelApp(tk.Tk):
         settings_path: Optional[Path] = None,
         presets_path: Optional[Path] = None,
         data_dir: Optional[Path] = None,
+        logger: Optional[logging.Logger] = None,
     ):
         super().__init__()
 
         self.title("Multi-channel NBFM TX")
         self.resizable(True, True)
+        self.logger = logger or LOGGER
 
         try:
             self.presets = load_channel_presets(
@@ -2285,6 +2290,16 @@ class MultiChannelApp(tk.Tk):
                 "master_scale": f"{master_scale}",
             },
         )
+        self.logger.info(
+            "Transmission start: device=%s center_freq_hz=%s tx_sr=%s mod_sr=%s deviation_hz=%s master_scale=%s loop_queue=%s",
+            self.device_var.get(),
+            center_freq,
+            tx_sr,
+            mod_sr,
+            deviation,
+            master_scale,
+            self.loop_var.get(),
+        )
 
         def _run():
             try:
@@ -2292,6 +2307,16 @@ class MultiChannelApp(tk.Tk):
                 self.tb.wait()
             except Exception as exc:  # pragma: no cover - UI feedback
                 self._run_error = exc
+                self.logger.exception(
+                    "Transmission error: device=%s center_freq_hz=%s tx_sr=%s mod_sr=%s deviation_hz=%s master_scale=%s loop_queue=%s",
+                    self.device_var.get(),
+                    center_freq,
+                    tx_sr,
+                    mod_sr,
+                    deviation,
+                    master_scale,
+                    self.loop_var.get(),
+                )
             finally:
                 self.after(0, self._on_transmission_complete)
 
@@ -2369,6 +2394,7 @@ class MultiChannelApp(tk.Tk):
         timestamp = time.strftime("%H:%M:%S")
         entry = f"[{timestamp}] {message}"
         self.log_messages.append(entry)
+        self.logger.info(message)
         if hasattr(self, "log_text"):
             self.log_text.configure(state="normal")
             self.log_text.insert(tk.END, entry + "\n")
@@ -2378,6 +2404,8 @@ class MultiChannelApp(tk.Tk):
 
 def main() -> None:
     args = parse_args()
+    log_path = resolve_log_path(APP_NAME, args.log_file, "multich_gui.log")
+    logger = setup_logging("multich_gui", log_file=log_path)
     settings_path = resolve_config_file(
         APP_NAME,
         "transmitter_settings.json",
@@ -2405,6 +2433,7 @@ def main() -> None:
         settings_path=settings_path,
         presets_path=presets_path,
         data_dir=args.data_dir,
+        logger=logger,
     )
     app.mainloop()
 
@@ -2500,6 +2529,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Override the channel presets CSV path.",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Optional log file path or filename.",
     )
     return parser.parse_args()
 

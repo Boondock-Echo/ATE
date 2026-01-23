@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import logging
 import sys
 import math
 from array import array
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, List, Sequence, Tuple
 
+from logging_utils import resolve_log_path, setup_logging
 from path_utils import atomic_write, ensure_directory, resolve_log_file
 
 try:  # pragma: no cover - optional dependency for MP3 files
@@ -24,6 +26,7 @@ except ImportError:  # pragma: no cover - handled lazily at runtime
 SUPPORTED_SUFFIXES = {".wav", ".mp3"}
 APP_NAME = "ate"
 DEFAULT_OUTPUT_NAME = "audio_duty_cycle.csv"
+LOGGER = logging.getLogger("audio_activity_report")
 
 
 @dataclass
@@ -295,9 +298,25 @@ def main() -> None:  # pragma: no cover - CLI wrapper
         default=None,
         help="Optional presets path (reserved for future settings).",
     )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Optional log file path or filename.",
+    )
 
     args = parser.parse_args()
 
+    log_path = resolve_log_path(APP_NAME, args.log_file, "audio_activity_report.log")
+    setup_logging("audio_activity_report", log_file=log_path)
+    LOGGER.info(
+        "Report start: paths=%s threshold=%s chunk_ms=%s recursive=%s output=%s",
+        args.paths,
+        args.threshold,
+        args.chunk_ms,
+        args.recursive,
+        args.output,
+    )
     output = args.output
     if output is None:
         output = resolve_log_file(APP_NAME, DEFAULT_OUTPUT_NAME, base_dir=args.data_dir)
@@ -307,6 +326,7 @@ def main() -> None:  # pragma: no cover - CLI wrapper
         raise SystemExit("No supported audio files were found.")
 
     _write_csv(rows, output)
+    LOGGER.info("Report complete: output=%s rows=%s", output, len(rows))
 
 
 if __name__ == "__main__":  # pragma: no cover

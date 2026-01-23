@@ -3,6 +3,7 @@
 
 import argparse
 import getpass
+import logging
 import os
 import shutil
 import tempfile
@@ -13,11 +14,13 @@ from typing import List, Optional
 
 import numpy as np
 
+from logging_utils import resolve_log_path, setup_logging
 from multich_nbfm_tx import MultiNBFMTx
 from path_utils import resolve_config_file, resolve_data_file
 
 
 APP_NAME = "ate"
+LOGGER = logging.getLogger("ctcss_channel1_squelch")
 
 
 def _format_id(value: Optional[int]) -> str:
@@ -36,24 +39,24 @@ def _get_user_identity() -> str:
 def _log_startup_environment(args: argparse.Namespace) -> None:
     config_path = resolve_config_file(APP_NAME, "transmitter_settings.json")
     data_path = resolve_data_file(APP_NAME, "channel_presets.csv")
-    print("Startup environment:")
-    print(f"  Identity: {_get_user_identity()}")
-    print(f"  CWD: {Path.cwd()}")
-    print(f"  PATH: {os.environ.get('PATH', '')}")
-    print(f"  Config path: {config_path}")
-    print(f"  Data path: {data_path}")
-    print("  CLI args:")
-    print(f"    device={args.device}")
-    print(f"    fc={args.fc}")
-    print(f"    tx_sr={args.tx_sr}")
-    print(f"    tx_gain={args.tx_gain}")
-    print(f"    deviation={args.deviation}")
-    print(f"    mod_sr={args.mod_sr}")
-    print(f"    duration={args.duration}")
-    print(f"    ctcss_tone={args.ctcss_tone}")
-    print(f"    ctcss_level={args.ctcss_level}")
-    print(f"    ctcss_deviation={args.ctcss_deviation}")
-    print(f"    master_scale={args.master_scale}")
+    LOGGER.info("Startup environment:")
+    LOGGER.info("  Identity: %s", _get_user_identity())
+    LOGGER.info("  CWD: %s", Path.cwd())
+    LOGGER.info("  PATH: %s", os.environ.get("PATH", ""))
+    LOGGER.info("  Config path: %s", config_path)
+    LOGGER.info("  Data path: %s", data_path)
+    LOGGER.info("  CLI args:")
+    LOGGER.info("    device=%s", args.device)
+    LOGGER.info("    fc=%s", args.fc)
+    LOGGER.info("    tx_sr=%s", args.tx_sr)
+    LOGGER.info("    tx_gain=%s", args.tx_gain)
+    LOGGER.info("    deviation=%s", args.deviation)
+    LOGGER.info("    mod_sr=%s", args.mod_sr)
+    LOGGER.info("    duration=%s", args.duration)
+    LOGGER.info("    ctcss_tone=%s", args.ctcss_tone)
+    LOGGER.info("    ctcss_level=%s", args.ctcss_level)
+    LOGGER.info("    ctcss_deviation=%s", args.ctcss_deviation)
+    LOGGER.info("    master_scale=%s", args.master_scale)
 
 
 def _verify_dependencies(device: str) -> None:
@@ -123,11 +126,19 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--master-scale", type=float, default=0.8, help="Master amplitude scaling applied to the composite signal")
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Optional log file path or filename.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    log_path = resolve_log_path(APP_NAME, args.log_file, "ctcss_channel1_squelch.log")
+    setup_logging("ctcss_channel1_squelch", log_file=log_path)
     _verify_dependencies(args.device)
     _log_startup_environment(args)
 
@@ -164,7 +175,18 @@ def main() -> None:
         tx.print_configuration_summary()
 
         tx.start()
-        print(
+        LOGGER.info(
+            "Transmission start: device=%s center_freq_hz=%s tx_sr=%s tx_gain=%s deviation_hz=%s mod_sr=%s ctcss_tone=%s duration=%s",
+            args.device,
+            args.fc,
+            args.tx_sr,
+            args.tx_gain,
+            args.deviation,
+            args.mod_sr,
+            args.ctcss_tone,
+            args.duration,
+        )
+        LOGGER.info(
             "Transmitting continuous CTCSS tone on channel 1. Press Ctrl-C to stop, "
             "or wait for the requested duration."
         )
@@ -176,6 +198,7 @@ def main() -> None:
                 if args.duration > 0 and (time.time() - start) >= args.duration:
                     break
         except KeyboardInterrupt:
+            LOGGER.info("Transmission interrupted by user.")
             pass
         finally:
             tx.stop()
