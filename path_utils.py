@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -21,6 +22,30 @@ def ensure_directory(path: Path, mode: int = 0o700) -> None:
     """Create a directory (and parents) with safe permissions if missing."""
 
     path.mkdir(parents=True, exist_ok=True, mode=mode)
+
+
+def atomic_write(
+    path: Path,
+    data: str | bytes,
+    *,
+    mode: str = "w",
+    encoding: str = "utf-8",
+) -> None:
+    """Write data to *path* atomically via a temporary file."""
+
+    path = Path(path)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(parent, 0o750)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    open_kwargs = {} if "b" in mode else {"encoding": encoding}
+    try:
+        with tmp_path.open(mode, **open_kwargs) as handle:
+            handle.write(data)
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def _resolve_standard_file(

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from path_utils import atomic_write
 
 @dataclass
 class HackRFExportChannel:
@@ -125,25 +127,26 @@ def export_hackrf_package(
     }
 
     json_path = destination / "hackrf_playlist.json"
-    json_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    atomic_write(json_path, json.dumps(manifest, indent=2))
 
     csv_path = destination / "hackrf_playlist.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        fieldnames = [
-            "index",
-            "frequency_hz",
-            "gain",
-            "ctcss_hz",
-            "dcs_code",
-            "files",
-        ]
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for entry in manifest_channels:
-            writer.writerow({
-                **entry,
-                "files": ";".join(entry["files"]),
-            })
+    buffer = io.StringIO(newline="")
+    fieldnames = [
+        "index",
+        "frequency_hz",
+        "gain",
+        "ctcss_hz",
+        "dcs_code",
+        "files",
+    ]
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for entry in manifest_channels:
+        writer.writerow({
+            **entry,
+            "files": ";".join(entry["files"]),
+        })
+    atomic_write(csv_path, buffer.getvalue())
 
     return json_path
 
