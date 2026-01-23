@@ -81,6 +81,40 @@ compact dialog. The dialog persists your changes back to the JSON file so
 subsequent sessions inherit the tuned defaults without exposing the controls on
 the main window.
 
+### HackRF SD Card Export
+
+Use the GUI's **File → Export to SD card…** (or **File → Export for HackRF…** if
+you want to pick the destination manually) to generate an SD-card-ready folder.
+The export creates a subfolder with this layout:
+
+* `audio/` – WAV/MP3 files copied from each channel playlist (deduplicated when
+  multiple channels use the same source file).
+* `hackrf_playlist.json` – machine-readable manifest with center frequency,
+  sample rates, deviation, gains, tone settings, and per-channel file lists.
+* `hackrf_playlist.csv` – human-readable summary of the same channel playlist
+  data for quick inspection.
+
+**On-device workflow (playlist export):**
+
+1. Copy the export folder onto the PortaPack SD card (either in the root or in
+   your chosen subfolder).
+2. On the PortaPack, open the playlist player app, browse to the export folder,
+   and load `hackrf_playlist.json` (or use the CSV for quick verification).
+3. Start playback to transmit the queued audio files with the saved center
+   frequency, per-channel offsets, and gain settings.
+
+**On-device workflow (IQ export):**
+
+1. Choose **Export IQ (PortaPack Replay)** in the export dialog to generate
+   `hackrf_multichannel.iq` and `hackrf_iq_manifest.json`.
+2. Copy the export folder onto the SD card.
+3. On the PortaPack, open **Replay → IQ**, select `hackrf_multichannel.iq`, and
+   set the replay parameters to match the manifest:
+   * **Center frequency:** `center_frequency_hz` from the manifest.
+   * **Sample rate:** `tx_sample_rate` from the manifest.
+   * **Format:** 8-bit interleaved IQ (`int8`, `IQ`).
+4. Start replay to transmit the captured multichannel composite.
+
 ### Dependencies
 
 Both scripts require GNU Radio with `osmosdr` support and NumPy available in
