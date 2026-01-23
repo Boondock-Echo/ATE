@@ -8,6 +8,8 @@ import importlib
 import io
 import json
 import math
+import os
+import getpass
 import threading
 import time
 import tkinter as tk
@@ -193,6 +195,19 @@ DEFAULT_TRANSMITTER_SETTINGS: Dict[str, Optional[float]] = {
     "gate_attack_ms": DEFAULT_GATE_ATTACK_MS,
     "gate_release_ms": DEFAULT_GATE_RELEASE_MS,
 }
+
+
+def _format_id(value: Optional[int]) -> str:
+    return "unknown" if value is None else str(value)
+
+
+def _get_user_identity() -> str:
+    uid = _format_id(getattr(os, "getuid", lambda: None)())
+    gid = _format_id(getattr(os, "getgid", lambda: None)())
+    euid = _format_id(getattr(os, "geteuid", lambda: None)())
+    egid = _format_id(getattr(os, "getegid", lambda: None)())
+    username = getpass.getuser()
+    return f"uid={uid} gid={gid} euid={euid} egid={egid} user={username}"
 
 
 def _format_setting_value(value: Optional[float]) -> str:
@@ -1423,6 +1438,7 @@ class MultiChannelApp(tk.Tk):
         self.add_channel()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._log("Application initialized.")
+        self._log_environment_details("startup")
 
     def _compose_active_settings(self, **overrides: Optional[float]) -> Dict[str, Optional[float]]:
         settings = dict(DEFAULT_TRANSMITTER_SETTINGS)
@@ -2258,6 +2274,17 @@ class MultiChannelApp(tk.Tk):
         self.stop_button.config(state="normal")
         self.tx_progress.start(60)
         self._log(f"Transmission started @ {center_freq/1e6:.4f} MHz.")
+        self._log_environment_details(
+            "transmission start",
+            extra_details={
+                "device": self.device_var.get(),
+                "center_freq_hz": f"{center_freq}",
+                "tx_sr": f"{tx_sr}",
+                "mod_sr": f"{mod_sr}",
+                "deviation_hz": f"{deviation}",
+                "master_scale": f"{master_scale}",
+            },
+        )
 
         def _run():
             try:
@@ -2323,6 +2350,20 @@ class MultiChannelApp(tk.Tk):
             self.after(200, self._close_when_idle)
         else:
             self.destroy()
+
+    def _log_environment_details(
+        self, context: str, *, extra_details: Optional[Dict[str, str]] = None
+    ) -> None:
+        data_path = resolve_data_file(APP_NAME, "channel_presets.csv")
+        self._log(f"Environment details ({context}):")
+        self._log(f"  Identity: {_get_user_identity()}")
+        self._log(f"  CWD: {Path.cwd()}")
+        self._log(f"  PATH: {os.environ.get('PATH', '')}")
+        self._log(f"  Config path: {TRANSMITTER_SETTINGS_PATH}")
+        self._log(f"  Data path: {data_path}")
+        if extra_details:
+            for key, value in extra_details.items():
+                self._log(f"  {key}: {value}")
 
     def _log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")

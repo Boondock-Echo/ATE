@@ -23,7 +23,10 @@
 #
 import argparse
 import audioop
+import getpass
 import math
+import os
+import shutil
 import time
 import wave
 from fractions import Fraction
@@ -39,12 +42,85 @@ import numpy as np
 import osmosdr
 from gnuradio import analog, blocks, filter, gr
 from gnuradio.filter import firdes, window
+from path_utils import resolve_config_file, resolve_data_file
 
 
 DEFAULT_GATE_OPEN_THRESHOLD = 0.015
 DEFAULT_GATE_CLOSE_THRESHOLD = 0.014
 DEFAULT_GATE_ATTACK_MS = 4.0
 DEFAULT_GATE_RELEASE_MS = 200.0
+APP_NAME = "ate"
+
+
+def _format_id(value: Optional[int]) -> str:
+    return "unknown" if value is None else str(value)
+
+
+def _get_user_identity() -> str:
+    uid = _format_id(getattr(os, "getuid", lambda: None)())
+    gid = _format_id(getattr(os, "getgid", lambda: None)())
+    euid = _format_id(getattr(os, "geteuid", lambda: None)())
+    egid = _format_id(getattr(os, "getegid", lambda: None)())
+    username = getpass.getuser()
+    return f"uid={uid} gid={gid} euid={euid} egid={egid} user={username}"
+
+
+def _log_startup_environment(args: argparse.Namespace) -> None:
+    config_path = resolve_config_file(APP_NAME, "transmitter_settings.json")
+    data_path = resolve_data_file(APP_NAME, "channel_presets.csv")
+    print("Startup environment:")
+    print(f"  Identity: {_get_user_identity()}")
+    print(f"  CWD: {Path.cwd()}")
+    print(f"  PATH: {os.environ.get('PATH', '')}")
+    print(f"  Config path: {config_path}")
+    print(f"  Data path: {data_path}")
+    print("  CLI args:")
+    print(f"    device={args.device}")
+    print(f"    fc={args.fc}")
+    print(f"    tx_sr={args.tx_sr}")
+    print(f"    tx_gain={args.tx_gain}")
+    print(f"    deviation={args.deviation}")
+    print(f"    mod_sr={args.mod_sr}")
+    print(f"    audio_sr={args.audio_sr}")
+    print(f"    files={args.files}")
+    print(f"    freqs={args.freqs}")
+    print(f"    offsets={args.offsets}")
+    print(f"    loop_queue={args.loop_queue}")
+    print(f"    channel_gains={args.channel_gains}")
+    print(f"    ctcss_tones={args.ctcss_tones}")
+    print(f"    ctcss_level={args.ctcss_level}")
+    print(f"    ctcss_deviation={args.ctcss_deviation}")
+    print(f"    dcs_codes={args.dcs_codes}")
+
+
+def _verify_dependencies(args: argparse.Namespace) -> None:
+    missing: List[str] = []
+    device = args.device.lower()
+    required_execs: List[str] = []
+    if device == "hackrf":
+        required_execs.append("hackrf_transfer")
+    elif device in {"pluto", "plutoplus", "pluto+", "plutoplussdr"}:
+        required_execs.append("iio_info")
+
+    for executable in required_execs:
+        if shutil.which(executable) is None:
+            missing.append(
+                f"Missing required executable '{executable}' for device '{args.device}'."
+            )
+
+    has_mp3 = any(
+        Path(path).suffix.lower() == ".mp3"
+        for group in args.file_groups
+        for path in group
+    )
+    if has_mp3 and audioread is None:
+        missing.append(
+            "Missing required Python package 'audioread' for MP3 playback. "
+            "Install it with 'pip install audioread'."
+        )
+
+    if missing:
+        raise SystemExit("\n".join(missing))
 
 
 class QueuedAudioSource(gr.sync_block):
@@ -1199,6 +1275,8 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    _verify_dependencies(args)
+    _log_startup_environment(args)
     tb = MultiNBFMTx(
         device=args.device,
         center_freq=args.fc,
