@@ -83,7 +83,29 @@ the main window.
 
 ### Dependencies
 
-Both scripts require GNU Radio with `osmosdr` support and NumPy available in
-your Python environment. MP3 playlists are supported via the optional
-[`audioread`](https://github.com/beetbox/audioread) dependency; install it with
-`pip install audioread` if you want to mix MP3 tracks alongside WAV files.
+#### System dependencies
+
+* GNU Radio runtime (`gnuradio`), including the analog, blocks, filter, and
+  grc runtime modules used by the transmitter.
+* `gr-osmosdr` and the associated SDR driver stack for the target hardware
+  (e.g., HackRF, Pluto/PlutoPlus via libiio, or other SoapySDR-compatible
+  devices).
+* If you plan to use MP3 playlists with the optional `audioread` dependency,
+  install a backend such as FFmpeg or GStreamer (system packages vary by
+  platform).
+
+#### Python dependencies
+
+Install the core Python dependencies from `pyproject.toml`. Optional MP3
+support can be enabled by installing the `mp3` extra.
+
+```bash
+pip install .
+# Optional MP3 support
+pip install ".[mp3]"
+```
+
+#### Node.js
+
+Node.js is not required for this repository, and there is currently no
+JavaScript build tooling.
