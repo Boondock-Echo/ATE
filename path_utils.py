@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -36,7 +37,10 @@ def atomic_write(
     path = Path(path)
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(parent, 0o750)
+    try:
+        os.chmod(parent, 0o750)
+    except OSError:
+        pass
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     open_kwargs = {} if "b" in mode else {"encoding": encoding}
     try:
@@ -83,10 +87,7 @@ def resolve_config_file(
     cli_path: Optional[Path] = None,
     bundle_path: Optional[Path] = None,
 ) -> Path:
-    config_dirs = [
-        _expand("~/.config") / app_name,
-        Path("/etc") / app_name,
-    ]
+    config_dirs = _platform_config_dirs(app_name)
     return _resolve_standard_file(
         app_name=app_name,
         filename=filename,
@@ -104,10 +105,7 @@ def resolve_data_file(
     base_dir: Optional[Path] = None,
     bundle_path: Optional[Path] = None,
 ) -> Path:
-    data_dirs = [
-        _expand("~/.local/share") / app_name,
-        Path("/var/lib") / app_name,
-    ]
+    data_dirs = _platform_data_dirs(app_name)
     return _resolve_standard_file(
         app_name=app_name,
         filename=filename,
@@ -125,10 +123,7 @@ def resolve_log_file(
     cli_path: Optional[Path] = None,
     base_dir: Optional[Path] = None,
 ) -> Path:
-    log_dirs = [
-        _expand("~/.local/state") / app_name,
-        Path("/var/log") / app_name,
-    ]
+    log_dirs = _platform_log_dirs(app_name)
     return _resolve_standard_file(
         app_name=app_name,
         filename=filename,
@@ -136,3 +131,38 @@ def resolve_log_file(
         base_dir=base_dir,
         search_dirs=log_dirs,
     )
+
+
+def _platform_config_dirs(app_name: str) -> list[Path]:
+    if os.name == "nt":
+        base = Path(os.getenv("APPDATA") or _expand("~"))
+        return [base / app_name]
+    if sys.platform == "darwin":
+        return [_expand("~/Library/Application Support") / app_name]
+    return [_expand("~/.config") / app_name, Path("/etc") / app_name]
+
+
+def _platform_data_dirs(app_name: str) -> list[Path]:
+    if os.name == "nt":
+        base = Path(
+            os.getenv("LOCALAPPDATA")
+            or os.getenv("APPDATA")
+            or _expand("~")
+        )
+        return [base / app_name]
+    if sys.platform == "darwin":
+        return [_expand("~/Library/Application Support") / app_name]
+    return [_expand("~/.local/share") / app_name, Path("/var/lib") / app_name]
+
+
+def _platform_log_dirs(app_name: str) -> list[Path]:
+    if os.name == "nt":
+        base = Path(
+            os.getenv("LOCALAPPDATA")
+            or os.getenv("APPDATA")
+            or _expand("~")
+        )
+        return [base / "Logs" / app_name]
+    if sys.platform == "darwin":
+        return [_expand("~/Library/Logs") / app_name]
+    return [_expand("~/.local/state") / app_name, Path("/var/log") / app_name]
