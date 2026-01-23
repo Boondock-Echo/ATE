@@ -1,0 +1,17 @@
+[project]
+name = "ate"
+version = "0.1.0"
+description = "Automated test engineering utilities for audio and RF experimentation."
+requires-python = ">=3.9"
+readme = "README.md"
+license = {text = "Proprietary"}
+authors = [{name = "ATE Contributors"}]
+
+dependencies = [
+  "numpy>=1.21",
+  "gnuradio>=3.9",
+  "osmosdr>=0.2",
+]
+
+[project.optional-dependencies]
+mp3 = ["audioread>=3.0"]
