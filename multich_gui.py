@@ -11,6 +11,7 @@ import math
 import os
 import getpass
 import logging
+import signal
 import threading
 import time
 import tkinter as tk
@@ -1437,6 +1438,7 @@ class MultiChannelApp(tk.Tk):
         self.settings_status_var = tk.StringVar(value="All transmitter settings look valid.")
         self.log_messages: List[str] = []
         self.session_path: Optional[Path] = None
+        self._shutdown_initiated = False
 
         self._build_menu()
         self._build_layout()
@@ -2360,11 +2362,19 @@ class MultiChannelApp(tk.Tk):
         self.tb = None
 
     def on_close(self) -> None:
+        self.request_shutdown(force=False)
+
+    def request_shutdown(self, *, force: bool) -> None:
+        if self._shutdown_initiated:
+            return
+        self._shutdown_initiated = True
         if self.running and self.tb is not None:
-            if not messagebox.askyesno(
-                "Quit", "Transmission is active. Do you want to stop and exit?"
-            ):
-                return
+            if not force:
+                if not messagebox.askyesno(
+                    "Quit", "Transmission is active. Do you want to stop and exit?"
+                ):
+                    self._shutdown_initiated = False
+                    return
             self.stop_transmission()
             self.after(200, self._close_when_idle)
         else:
@@ -2435,6 +2445,22 @@ def main() -> None:
         data_dir=args.data_dir,
         logger=logger,
     )
+    shutdown_requested = False
+
+    def _handle_signal(signum, _frame) -> None:
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            return
+        shutdown_requested = True
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = str(signum)
+        logger.info("Shutdown requested (%s).", name)
+        app.after(0, lambda: app.request_shutdown(force=True))
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
     app.mainloop()
 
 
