@@ -15,3 +15,18 @@ dependencies = [
 
 [project.optional-dependencies]
 mp3 = ["audioread>=3.0"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+  "audio_activity_report",
+  "ctcss_channel1_squelch",
+  "hackrf_export",
+  "logging_utils",
+  "multich_gui",
+  "multich_nbfm_tx",
+  "path_utils",
+]
