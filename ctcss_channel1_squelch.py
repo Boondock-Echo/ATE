@@ -32,6 +32,18 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--device", choices=["hackrf", "pluto", "plutoplus", "pluto+", "plutoplussdr"], default="hackrf")
+    parser.add_argument(
+        "--device-args",
+        type=str,
+        default=None,
+        help="Raw osmosdr device arguments string (e.g., 'pluto=ip:192.168.2.1')",
+    )
+    parser.add_argument(
+        "--pluto-ip",
+        type=str,
+        default=None,
+        help="Pluto/PlutoPlus SDR IP address (builds device args as 'pluto=ip:<addr>')",
+    )
     parser.add_argument("--fc", type=float, required=True, help="Center frequency (Hz)")
     parser.add_argument("--tx-sr", type=float, default=8e6, help="Transmit sample rate (Hz)")
     parser.add_argument("--tx-gain", type=float, default=0.0, help="Transmitter gain setting")
@@ -70,6 +82,12 @@ def main() -> None:
         raise SystemExit("--ctcss-level must be positive")
     if args.ctcss_deviation is not None and args.ctcss_deviation <= 0:
         raise SystemExit("--ctcss-deviation must be positive")
+    if args.device_args and args.pluto_ip:
+        raise SystemExit("--device-args and --pluto-ip cannot be used together")
+    if args.pluto_ip:
+        if args.device.lower() not in {"pluto", "plutoplus", "pluto+", "plutoplussdr"}:
+            raise SystemExit("--pluto-ip is only valid with --device pluto or plutoplus")
+        args.device_args = f"pluto=ip:{args.pluto_ip}"
 
     silence_sr = 48_000
 
@@ -84,6 +102,7 @@ def main() -> None:
             center_freq=args.fc,
             file_groups=[[temp_path]],
             offsets=[0.0],
+            device_args=args.device_args,
             tx_sr=args.tx_sr,
             tx_gain=args.tx_gain,
             deviation=args.deviation,
@@ -124,4 +143,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
