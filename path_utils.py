@@ -1,0 +1,113 @@
+"""Shared helpers for resolving standard configuration/data/log paths."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable, Optional
+
+
+def _expand(path: Path | str) -> Path:
+    return Path(path).expanduser()
+
+
+def _first_existing(paths: Iterable[Path]) -> Optional[Path]:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
+def ensure_directory(path: Path, mode: int = 0o700) -> None:
+    """Create a directory (and parents) with safe permissions if missing."""
+
+    path.mkdir(parents=True, exist_ok=True, mode=mode)
+
+
+def _resolve_standard_file(
+    *,
+    app_name: str,
+    filename: str,
+    cli_path: Optional[Path] = None,
+    base_dir: Optional[Path] = None,
+    search_dirs: Iterable[Path],
+    bundle_path: Optional[Path] = None,
+) -> Path:
+    if cli_path is not None:
+        return _expand(cli_path)
+
+    if base_dir is not None:
+        return _expand(base_dir) / filename
+
+    existing = _first_existing((candidate / filename for candidate in search_dirs))
+    if existing is not None:
+        return existing
+
+    if bundle_path is not None and bundle_path.exists():
+        return bundle_path
+
+    search_dirs = list(search_dirs)
+    if not search_dirs:
+        raise ValueError("No search directories configured")
+    return search_dirs[0] / filename
+
+
+def resolve_config_file(
+    app_name: str,
+    filename: str,
+    *,
+    cli_path: Optional[Path] = None,
+    bundle_path: Optional[Path] = None,
+) -> Path:
+    config_dirs = [
+        _expand("~/.config") / app_name,
+        Path("/etc") / app_name,
+    ]
+    return _resolve_standard_file(
+        app_name=app_name,
+        filename=filename,
+        cli_path=cli_path,
+        search_dirs=config_dirs,
+        bundle_path=bundle_path,
+    )
+
+
+def resolve_data_file(
+    app_name: str,
+    filename: str,
+    *,
+    cli_path: Optional[Path] = None,
+    base_dir: Optional[Path] = None,
+    bundle_path: Optional[Path] = None,
+) -> Path:
+    data_dirs = [
+        _expand("~/.local/share") / app_name,
+        Path("/var/lib") / app_name,
+    ]
+    return _resolve_standard_file(
+        app_name=app_name,
+        filename=filename,
+        cli_path=cli_path,
+        base_dir=base_dir,
+        search_dirs=data_dirs,
+        bundle_path=bundle_path,
+    )
+
+
+def resolve_log_file(
+    app_name: str,
+    filename: str,
+    *,
+    cli_path: Optional[Path] = None,
+    base_dir: Optional[Path] = None,
+) -> Path:
+    log_dirs = [
+        _expand("~/.local/state") / app_name,
+        Path("/var/log") / app_name,
+    ]
+    return _resolve_standard_file(
+        app_name=app_name,
+        filename=filename,
+        cli_path=cli_path,
+        base_dir=base_dir,
+        search_dirs=log_dirs,
+    )
