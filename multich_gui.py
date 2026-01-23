@@ -7,6 +7,7 @@ import csv
 import importlib
 import json
 import math
+import os
 import threading
 import time
 import tkinter as tk
@@ -37,6 +38,8 @@ DEFAULT_MASTER_SCALE = 0.6
 DEFAULT_CTCSS_LEVEL = 0.20
 DEFAULT_TX_GAIN_OVERRIDE = 10.0
 DEFAULT_IQ_EXPORT_SECONDS = 30.0
+DEFAULT_SD_CARD_EXPORT_SUBFOLDER = "ATE_EXPORT"
+SD_CARD_LAYOUT_MARKERS = {"portapack", "firmware", "apps", "samples", "playlists"}
 
 
 TRANSMITTER_SETTINGS_PATH = Path(__file__).with_name("transmitter_settings.json")
@@ -246,6 +249,14 @@ def save_transmitter_settings(
 class HackRFExportOptions:
     mode: str
     duration_seconds: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class SDCardExportTarget:
+    root: Path
+    subfolder: str
+    layout_matches: bool
+    layout_warning_shown: bool = False
 
 
 @dataclass(frozen=True)
@@ -1451,6 +1462,7 @@ class MultiChannelApp(tk.Tk):
         file_menu = tk.Menu(menubar, tearoff=False)
         file_menu.add_command(label="Save Session…", command=self.save_session)
         file_menu.add_command(label="Load Session…", command=self.load_session)
+        file_menu.add_command(label="Export to SD card…", command=self.export_to_sd_card)
         file_menu.add_command(
             label="Export for HackRF…", command=self.export_hackrf_bundle
         )
@@ -1547,9 +1559,14 @@ class MultiChannelApp(tk.Tk):
         )
         ttk.Button(
             session_controls,
+            text="Export to SD card…",
+            command=self.export_to_sd_card,
+        ).grid(row=0, column=2, padx=4)
+        ttk.Button(
+            session_controls,
             text="Export for HackRF…",
             command=self.export_hackrf_bundle,
-        ).grid(row=0, column=2, padx=4)
+        ).grid(row=0, column=3, padx=4)
 
         button_frame = ttk.Frame(main)
         button_frame.grid(row=7, column=0, columnspan=3, sticky="e", pady=(10, 0))
@@ -1836,6 +1853,183 @@ class MultiChannelApp(tk.Tk):
             return
         self._log(f"Exported presets to {Path(filename).name}.")
 
+    def _sd_card_layout_matches(self, root: Path) -> bool:
+        try:
+            entries = {
+                entry.name.casefold()
+                for entry in root.iterdir()
+                if entry.is_dir()
+            }
+        except OSError:
+            return False
+        return bool(entries & SD_CARD_LAYOUT_MARKERS)
+
+    def _ask_sd_card_export_target(self) -> Optional[SDCardExportTarget]:  # pragma: no cover - modal UI
+        dialog = tk.Toplevel(self)
+        dialog.title("Export to SD card")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        root_var = tk.StringVar()
+        subfolder_var = tk.StringVar(value=DEFAULT_SD_CARD_EXPORT_SUBFOLDER)
+        status_var = tk.StringVar(value="Select the SD card root folder.")
+        result: Optional[SDCardExportTarget] = None
+
+        def _update_status(*_ignored):
+            root_text = root_var.get().strip()
+            if not root_text:
+                status_var.set("Select the SD card root folder.")
+                return
+            root = Path(root_text).expanduser()
+            if not root.exists() or not root.is_dir():
+                status_var.set("Selected path is not a folder.")
+                return
+            if self._sd_card_layout_matches(root):
+                status_var.set("PortaPack SD card layout detected.")
+            else:
+                status_var.set(
+                    "No PortaPack folders detected; export will use a dedicated folder."
+                )
+
+        def _browse():
+            selected = filedialog.askdirectory(title="Choose SD card root folder")
+            if selected:
+                root_var.set(selected)
+
+        def _cancel():
+            nonlocal result
+            result = None
+            dialog.destroy()
+
+        def _confirm():
+            nonlocal result
+            root_text = root_var.get().strip()
+            if not root_text:
+                messagebox.showerror(
+                    "Missing folder",
+                    "Select the SD card root folder.",
+                    parent=dialog,
+                )
+                return
+            root = Path(root_text).expanduser()
+            if not root.exists() or not root.is_dir():
+                messagebox.showerror(
+                    "Invalid folder",
+                    "The selected SD card root is not a folder.",
+                    parent=dialog,
+                )
+                return
+            subfolder_text = subfolder_var.get().strip()
+            if not subfolder_text:
+                messagebox.showerror(
+                    "Missing folder name",
+                    "Enter a folder name to store the export.",
+                    parent=dialog,
+                )
+                return
+            subfolder_path = Path(subfolder_text)
+            if subfolder_path.is_absolute() or ".." in subfolder_path.parts:
+                messagebox.showerror(
+                    "Invalid folder name",
+                    "Use a simple folder name or relative path.",
+                    parent=dialog,
+                )
+                return
+            if subfolder_path == Path("."):
+                messagebox.showerror(
+                    "Invalid folder name",
+                    "Enter a folder name for the export.",
+                    parent=dialog,
+                )
+                return
+            if not os.access(root, os.W_OK):
+                messagebox.showerror(
+                    "Not writable",
+                    "The selected SD card root is not writable.",
+                    parent=dialog,
+                )
+                return
+            export_root = root / subfolder_path
+            if export_root.exists() and not export_root.is_dir():
+                messagebox.showerror(
+                    "Invalid export folder",
+                    "The export folder name is already used by a file.",
+                    parent=dialog,
+                )
+                return
+            try:
+                export_root.mkdir(parents=True, exist_ok=True)
+                test_path = export_root / ".ate_write_test"
+                test_path.write_text("ok", encoding="utf-8")
+                test_path.unlink()
+            except OSError as exc:
+                messagebox.showerror(
+                    "Write test failed",
+                    f"Unable to write to {export_root} ({exc}).",
+                    parent=dialog,
+                )
+                return
+
+            layout_matches = self._sd_card_layout_matches(root)
+            warning_shown = False
+            if not layout_matches:
+                warning_shown = True
+                if not messagebox.askyesno(
+                    "SD card layout not detected",
+                    (
+                        "No PortaPack folders were detected in the selected root.\n"
+                        "Exporting will create a dedicated folder. Continue?"
+                    ),
+                    parent=dialog,
+                ):
+                    return
+
+            result = SDCardExportTarget(
+                root=root,
+                subfolder=subfolder_path.as_posix(),
+                layout_matches=layout_matches,
+                layout_warning_shown=warning_shown,
+            )
+            dialog.destroy()
+
+        body = ttk.Frame(dialog, padding=10)
+        body.grid(row=0, column=0)
+        body.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            body,
+            text="Export destination (SD card root):",
+            font=("", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+
+        ttk.Label(body, text="Root folder:").grid(row=1, column=0, sticky="w")
+        root_entry = ttk.Entry(body, textvariable=root_var, width=40)
+        root_entry.grid(row=1, column=1, sticky="we", padx=(0, 6))
+        ttk.Button(body, text="Browse…", command=_browse).grid(row=1, column=2)
+
+        ttk.Label(body, text="Export subfolder:").grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Entry(body, textvariable=subfolder_var, width=24).grid(
+            row=2, column=1, columnspan=2, sticky="w", pady=6
+        )
+
+        ttk.Label(
+            body,
+            textvariable=status_var,
+            foreground="#555555",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 6))
+
+        button_row = ttk.Frame(body)
+        button_row.grid(row=4, column=0, columnspan=3, sticky="e", pady=(6, 0))
+        ttk.Button(button_row, text="Cancel", command=_cancel).pack(side="right", padx=5)
+        ttk.Button(button_row, text="Export", command=_confirm).pack(side="right")
+
+        root_var.trace_add("write", _update_status)
+        _update_status()
+
+        dialog.wait_window()
+        return result
+
     def _ask_hackrf_export_options(self) -> Optional[HackRFExportOptions]:  # pragma: no cover - modal UI
         dialog = tk.Toplevel(self)
         dialog.title("HackRF Export")
@@ -1965,7 +2159,25 @@ class MultiChannelApp(tk.Tk):
         self.session_path = Path(filename)
         self._log(f"Loaded session from {self.session_path.name}.")
 
-    def export_hackrf_bundle(self) -> None:
+    def export_to_sd_card(self) -> None:
+        target = self._ask_sd_card_export_target()
+        if target is None:
+            return
+        self.export_hackrf_bundle(
+            target_root=target.root,
+            target_subfolder=target.subfolder,
+            layout_matches=target.layout_matches,
+            layout_warning_shown=target.layout_warning_shown,
+        )
+
+    def export_hackrf_bundle(
+        self,
+        *,
+        target_root: Optional[Path] = None,
+        target_subfolder: Optional[str] = None,
+        layout_matches: Optional[bool] = None,
+        layout_warning_shown: bool = False,
+    ) -> None:
         self._clear_channel_errors()
         options = self._ask_hackrf_export_options()
         if options is None:
@@ -2007,11 +2219,35 @@ class MultiChannelApp(tk.Tk):
             messagebox.showerror("Invalid configuration", str(exc))
             return
 
-        destination = filedialog.askdirectory(
-            title="Choose export folder for HackRF SD card"
-        )
-        if not destination:
-            return
+        if target_root is not None:
+            if not target_subfolder:
+                messagebox.showerror(
+                    "Export failed",
+                    "SD card export requires a target subfolder.",
+                )
+                return
+            destination = target_root / Path(target_subfolder)
+            if layout_matches is None:
+                layout_matches = self._sd_card_layout_matches(target_root)
+            if not layout_matches and not layout_warning_shown:
+                messagebox.showwarning(
+                    "SD card layout not detected",
+                    (
+                        "No PortaPack folders were detected in the selected root.\n"
+                        "Exporting will create a dedicated folder."
+                    ),
+                )
+            if not layout_matches:
+                self._log(
+                    "Warning: SD card root does not appear to contain PortaPack folders."
+                )
+        else:
+            destination = filedialog.askdirectory(
+                title="Choose export folder for HackRF SD card"
+            )
+            if not destination:
+                return
+            destination = Path(destination)
 
         channels: List[HackRFExportChannel] = []
         for idx, (files, offset, gain, ctcss, dcs) in enumerate(
@@ -2031,7 +2267,7 @@ class MultiChannelApp(tk.Tk):
         try:
             if options.mode == "iq":
                 manifest_path = export_hackrf_iq_package(
-                    Path(destination),
+                    destination,
                     channels,
                     center_frequency_hz=center_freq,
                     tx_sample_rate=tx_sr,
@@ -2049,7 +2285,7 @@ class MultiChannelApp(tk.Tk):
                 )
             else:
                 manifest_path = export_hackrf_package(
-                    Path(destination),
+                    destination,
                     channels,
                     center_frequency_hz=center_freq,
                     tx_sample_rate=tx_sr,
@@ -2068,10 +2304,11 @@ class MultiChannelApp(tk.Tk):
             messagebox.showerror("Export failed", str(exc))
             return
 
-        self._log(f"Exported HackRF package to {Path(destination).name}.")
+        final_path = manifest_path.parent.resolve()
+        self._log(f"Exported HackRF package to {final_path}.")
         messagebox.showinfo(
             "Export complete",
-            f"HackRF export written to {manifest_path.parent}.",
+            f"HackRF export written to:\n{final_path}",
         )
 
     def _serialize_session(self) -> Dict[str, object]:
