@@ -2,15 +2,78 @@
 """Transmit a single-channel CTCSS tone to verify squelch operation."""
 
 import argparse
+import getpass
 import os
+import shutil
 import tempfile
 import time
 import wave
 from pathlib import Path
+from typing import List, Optional
 
 import numpy as np
 
 from multich_nbfm_tx import MultiNBFMTx
+from path_utils import resolve_config_file, resolve_data_file
+
+
+APP_NAME = "ate"
+
+
+def _format_id(value: Optional[int]) -> str:
+    return "unknown" if value is None else str(value)
+
+
+def _get_user_identity() -> str:
+    uid = _format_id(getattr(os, "getuid", lambda: None)())
+    gid = _format_id(getattr(os, "getgid", lambda: None)())
+    euid = _format_id(getattr(os, "geteuid", lambda: None)())
+    egid = _format_id(getattr(os, "getegid", lambda: None)())
+    username = getpass.getuser()
+    return f"uid={uid} gid={gid} euid={euid} egid={egid} user={username}"
+
+
+def _log_startup_environment(args: argparse.Namespace) -> None:
+    config_path = resolve_config_file(APP_NAME, "transmitter_settings.json")
+    data_path = resolve_data_file(APP_NAME, "channel_presets.csv")
+    print("Startup environment:")
+    print(f"  Identity: {_get_user_identity()}")
+    print(f"  CWD: {Path.cwd()}")
+    print(f"  PATH: {os.environ.get('PATH', '')}")
+    print(f"  Config path: {config_path}")
+    print(f"  Data path: {data_path}")
+    print("  CLI args:")
+    print(f"    device={args.device}")
+    print(f"    fc={args.fc}")
+    print(f"    tx_sr={args.tx_sr}")
+    print(f"    tx_gain={args.tx_gain}")
+    print(f"    deviation={args.deviation}")
+    print(f"    mod_sr={args.mod_sr}")
+    print(f"    duration={args.duration}")
+    print(f"    ctcss_tone={args.ctcss_tone}")
+    print(f"    ctcss_level={args.ctcss_level}")
+    print(f"    ctcss_deviation={args.ctcss_deviation}")
+    print(f"    master_scale={args.master_scale}")
+
+
+def _verify_dependencies(device: str) -> None:
+    device_lower = device.lower()
+    required_execs: List[str] = []
+    if device_lower == "hackrf":
+        required_execs.append("hackrf_transfer")
+    elif device_lower in {"pluto", "plutoplus", "pluto+", "plutoplussdr"}:
+        required_execs.append("iio_info")
+
+    missing = [
+        executable
+        for executable in required_execs
+        if shutil.which(executable) is None
+    ]
+    if missing:
+        missing_list = ", ".join(missing)
+        raise SystemExit(
+            f"Missing required executable(s) for device '{device}': {missing_list}."
+        )
 
 
 def _write_silence_wav(path: Path, sample_rate: int, duration: float) -> None:
@@ -65,6 +128,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    _verify_dependencies(args.device)
+    _log_startup_environment(args)
 
     if args.ctcss_level <= 0:
         raise SystemExit("--ctcss-level must be positive")
@@ -124,4 +189,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
