@@ -26,7 +26,9 @@
 #
 import argparse
 import audioop
+import ipaddress
 import math
+import re
 import time
 import wave
 from fractions import Fraction
@@ -48,6 +50,9 @@ DEFAULT_GATE_OPEN_THRESHOLD = 0.015
 DEFAULT_GATE_CLOSE_THRESHOLD = 0.014
 DEFAULT_GATE_ATTACK_MS = 4.0
 DEFAULT_GATE_RELEASE_MS = 200.0
+
+_IP_KV_RE = re.compile(r"(?:^|[,\s])(?:ip|addr|hostname)=(?P<value>[^,\s]+)")
+_IP_COLON_RE = re.compile(r"ip:(?P<value>[^,\s]+)")
 
 
 class QueuedAudioSource(gr.sync_block):
@@ -758,6 +763,11 @@ class MultiNBFMTx(gr.top_block):
         self._device = device
         self._center_freq = float(center_freq)
         self._device_args = str(device_args) if device_args else None
+        self._ip_target = (
+            _normalize_ip_target(_extract_ip_target(self._device_args))
+            if self._device_args
+            else None
+        )
         self._tx_sr = float(tx_sr)
         self._tx_gain = float(tx_gain)
         self._deviation = float(deviation)
@@ -921,6 +931,10 @@ class MultiNBFMTx(gr.top_block):
         if self._device_args:
             device_line += f" device_args={self._device_args}"
         lines.append(device_line)
+        if self._ip_target:
+            lines.append(f"  Connection=IP target={self._ip_target}")
+        elif self._device.lower() in {"pluto", "plutoplus", "pluto+", "plutoplussdr"}:
+            lines.append("  Connection=USB (no IP target specified)")
         lines.append(
             f"  mod_sr={self._mod_sr/1e3:.1f} ksps deviation=±{self._deviation:.0f} Hz master_scale={self._master_scale:.2f}"
         )
@@ -980,6 +994,25 @@ def _parse_file_groups(file_args: Sequence[str]) -> List[List[Path]]:
             raise ValueError("Each channel must include at least one file path")
         groups.append(paths)
     return groups
+
+
+def _extract_ip_target(device_args: Optional[str]) -> Optional[str]:
+    if not device_args:
+        return None
+    match = _IP_KV_RE.search(device_args)
+    if match:
+        return match.group("value")
+    match = _IP_COLON_RE.search(device_args)
+    if match:
+        return match.group("value")
+    return None
+
+
+def _normalize_ip_target(target: str) -> str:
+    try:
+        return str(ipaddress.ip_address(target))
+    except ValueError:
+        return target
 
 
 def parse_args():
