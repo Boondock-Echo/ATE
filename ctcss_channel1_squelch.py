@@ -5,6 +5,7 @@ import argparse
 import getpass
 import logging
 import os
+import signal
 import shutil
 import tempfile
 import time
@@ -148,6 +149,7 @@ def main() -> None:
         raise SystemExit("--ctcss-deviation must be positive")
 
     silence_sr = 48_000
+    shutdown_called = False
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         temp_path = Path(tmp.name)
@@ -192,17 +194,41 @@ def main() -> None:
         )
 
         start = time.time()
+        stop_requested = False
+
+        def _shutdown(reason: str) -> None:
+            nonlocal shutdown_called, stop_requested
+            if shutdown_called:
+                return
+            shutdown_called = True
+            stop_requested = True
+            LOGGER.info("Shutdown requested (%s).", reason)
+            try:
+                tx.stop()
+            finally:
+                tx.wait()
+
+        def _handle_signal(signum, _frame) -> None:
+            try:
+                name = signal.Signals(signum).name
+            except ValueError:
+                name = str(signum)
+            _shutdown(f"signal {name}")
+
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT, _handle_signal)
+
         try:
             while True:
                 time.sleep(0.5)
+                if stop_requested:
+                    break
                 if args.duration > 0 and (time.time() - start) >= args.duration:
                     break
         except KeyboardInterrupt:
             LOGGER.info("Transmission interrupted by user.")
-            pass
         finally:
-            tx.stop()
-            tx.wait()
+            _shutdown("cleanup")
     finally:
         try:
             os.unlink(temp_path)

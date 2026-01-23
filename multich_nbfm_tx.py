@@ -27,6 +27,7 @@ import getpass
 import logging
 import math
 import os
+import signal
 import shutil
 import time
 import wave
@@ -1323,12 +1324,41 @@ if __name__ == "__main__":
         args.loop_queue,
     )
     started = False
+    shutdown_called = False
+    stop_requested = False
+
+    def _shutdown(reason: str) -> None:
+        nonlocal shutdown_called, stop_requested
+        if shutdown_called:
+            return
+        shutdown_called = True
+        stop_requested = True
+        LOGGER.info("Shutdown requested (%s).", reason)
+        if started:
+            tb.stop()
+            tb.wait()
+
+    def _handle_signal(signum, _frame) -> None:
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = str(signum)
+        _shutdown(f"signal {name}")
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    if stop_requested:
+        return
+
     try:
         tb.start()
         started = True
         LOGGER.info("Transmitting... Press Ctrl-C to stop.")
         while True:
             time.sleep(10)
+            if stop_requested:
+                break
     except KeyboardInterrupt:
         LOGGER.info("Transmission interrupted by user.")
     except Exception:
@@ -1345,6 +1375,4 @@ if __name__ == "__main__":
         )
         raise
     finally:
-        if started:
-            tb.stop()
-            tb.wait()
+        _shutdown("cleanup")
