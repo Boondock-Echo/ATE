@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, List, Sequence, Tuple
 
+from path_utils import ensure_directory, resolve_log_file
+
 try:  # pragma: no cover - optional dependency for MP3 files
     import audioread
 except ImportError:  # pragma: no cover - handled lazily at runtime
@@ -19,6 +21,8 @@ except ImportError:  # pragma: no cover - handled lazily at runtime
 
 
 SUPPORTED_SUFFIXES = {".wav", ".mp3"}
+APP_NAME = "ate"
+DEFAULT_OUTPUT_NAME = "audio_duty_cycle.csv"
 
 
 @dataclass
@@ -257,17 +261,39 @@ def main() -> None:  # pragma: no cover - CLI wrapper
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("audio_duty_cycle.csv"),
-        help="Optional CSV output path. Defaults to audio_duty_cycle.csv.",
+        default=None,
+        help="Optional CSV output path. Defaults to a standard data/log directory.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Optional config path (reserved for future settings).",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="Override the default data/log directory for CSV output.",
+    )
+    parser.add_argument(
+        "--presets",
+        type=Path,
+        default=None,
+        help="Optional presets path (reserved for future settings).",
     )
 
     args = parser.parse_args()
 
+    output = args.output
+    if output is None:
+        output = resolve_log_file(APP_NAME, DEFAULT_OUTPUT_NAME, base_dir=args.data_dir)
+        ensure_directory(output.parent)
     rows = generate_report(args.paths, args.threshold, args.chunk_ms, recursive=args.recursive)
     if not rows:
         raise SystemExit("No supported audio files were found.")
 
-    _write_csv(rows, args.output)
+    _write_csv(rows, output)
 
 
 if __name__ == "__main__":  # pragma: no cover

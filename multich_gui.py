@@ -24,6 +24,7 @@ from multich_nbfm_tx import (
     MultiNBFMTx,
 )
 from hackrf_export import HackRFExportChannel, export_hackrf_package
+from path_utils import ensure_directory, resolve_config_file, resolve_data_file
 
 
 DEFAULT_TX_SAMPLE_RATE = 8_000_000
@@ -34,7 +35,9 @@ DEFAULT_CTCSS_LEVEL = 0.20
 DEFAULT_TX_GAIN_OVERRIDE = 10.0
 
 
-TRANSMITTER_SETTINGS_PATH = Path(__file__).with_name("transmitter_settings.json")
+APP_NAME = "ate"
+DEFAULT_PRESETS_PATH = Path(__file__).with_name("channel_presets.csv")
+TRANSMITTER_SETTINGS_PATH = resolve_config_file(APP_NAME, "transmitter_settings.json")
 APP_ICON_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAADUklEQVR4nO2WQVIkMQwE5yv7Rh6w"
     "D9zncGdYH4jgAJjollQlKzNCR7qtqhw3jwcAAAAAAAAAAAAAAMB/Xl/+PO+M+vxwEwQYDgIMBwGG"
@@ -233,6 +236,7 @@ def save_transmitter_settings(
     serializable: Dict[str, Optional[float]] = {}
     for key in DEFAULT_TRANSMITTER_SETTINGS.keys():
         serializable[key] = settings.get(key)
+    ensure_directory(path.parent)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(serializable, handle, indent=2)
 
@@ -280,11 +284,22 @@ def _get_mp3_loader():
     return _MP3_CLASS
 
 
-def load_channel_presets() -> List[ChannelPreset]:
-    """Load channel presets from the packaged CSV file."""
+def load_channel_presets(
+    presets_path: Optional[Path] = None,
+    data_dir: Optional[Path] = None,
+) -> List[ChannelPreset]:
+    """Load channel presets from a resolved CSV location."""
 
-    presets_path = Path(__file__).with_name("channel_presets.csv")
-    return load_presets_from_csv(presets_path)
+    resolved_path = resolve_data_file(
+        APP_NAME,
+        "channel_presets.csv",
+        cli_path=presets_path,
+        base_dir=data_dir,
+        bundle_path=DEFAULT_PRESETS_PATH,
+    )
+    if resolved_path != DEFAULT_PRESETS_PATH:
+        ensure_directory(resolved_path.parent)
+    return load_presets_from_csv(resolved_path)
 
 
 def load_presets_from_csv(presets_path: Path) -> List[ChannelPreset]:
@@ -1320,6 +1335,8 @@ class MultiChannelApp(tk.Tk):
         gate_release_ms: Optional[float] = None,
         *,
         settings_path: Optional[Path] = None,
+        presets_path: Optional[Path] = None,
+        data_dir: Optional[Path] = None,
     ):
         super().__init__()
 
@@ -1327,7 +1344,10 @@ class MultiChannelApp(tk.Tk):
         self.resizable(True, True)
 
         try:
-            self.presets = load_channel_presets()
+            self.presets = load_channel_presets(
+                presets_path=presets_path,
+                data_dir=data_dir,
+            )
         except Exception as exc:  # pragma: no cover - UI feedback
             messagebox.showerror("Preset load failure", str(exc))
             raise
@@ -2313,6 +2333,18 @@ class MultiChannelApp(tk.Tk):
 
 def main() -> None:
     args = parse_args()
+    settings_path = resolve_config_file(
+        APP_NAME,
+        "transmitter_settings.json",
+        cli_path=args.config,
+    )
+    presets_path = resolve_data_file(
+        APP_NAME,
+        "channel_presets.csv",
+        cli_path=args.presets,
+        base_dir=args.data_dir,
+        bundle_path=DEFAULT_PRESETS_PATH,
+    )
     app = MultiChannelApp(
         tx_sample_rate=args.tx_sr,
         mod_sample_rate=args.mod_sr,
@@ -2325,6 +2357,9 @@ def main() -> None:
         gate_close_threshold=args.gate_close,
         gate_attack_ms=args.gate_attack_ms,
         gate_release_ms=args.gate_release_ms,
+        settings_path=settings_path,
+        presets_path=presets_path,
+        data_dir=args.data_dir,
     )
     app.mainloop()
 
@@ -2402,6 +2437,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Override the saved gate release in milliseconds.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Override the transmitter settings JSON path.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="Override the data directory used for presets.",
+    )
+    parser.add_argument(
+        "--presets",
+        type=Path,
+        default=None,
+        help="Override the channel presets CSV path.",
     )
     return parser.parse_args()
 
