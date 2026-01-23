@@ -24,11 +24,13 @@
 import argparse
 import audioop
 import getpass
+import importlib
 import logging
 import math
 import os
 import signal
 import shutil
+import sys
 import time
 import wave
 from fractions import Fraction
@@ -40,10 +42,56 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     audioread = None
 
-import numpy as np
-import osmosdr
-from gnuradio import analog, blocks, filter, gr
-from gnuradio.filter import firdes, window
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - optional dependency
+    np = None  # type: ignore[assignment]
+
+GNURADIO_IMPORT_ERROR: Optional[BaseException]
+OSMOSDR_IMPORT_ERROR: Optional[BaseException]
+
+try:  # pragma: no cover - handled by doctor/_verify_dependencies
+    import osmosdr
+except Exception as exc:  # pragma: no cover - optional dependency
+    osmosdr = None  # type: ignore[assignment]
+    OSMOSDR_IMPORT_ERROR = exc
+else:
+    OSMOSDR_IMPORT_ERROR = None
+
+try:  # pragma: no cover - handled by doctor/_verify_dependencies
+    from gnuradio import analog, blocks, filter, gr
+    from gnuradio.filter import firdes, window
+except Exception as exc:  # pragma: no cover - optional dependency
+    analog = blocks = filter = gr = None  # type: ignore[assignment]
+    firdes = window = None  # type: ignore[assignment]
+    GNURADIO_IMPORT_ERROR = exc
+else:
+    GNURADIO_IMPORT_ERROR = None
+
+if gr is None:  # pragma: no cover - used to keep --doctor usable without gnuradio
+    class _GnuradioStub:
+        class sync_block:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+        class hier_block2:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+        class top_block:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+        class basic_block:
+            pass
+
+        sizeof_gr_complex = 0
+
+        @staticmethod
+        def io_signature(*_args, **_kwargs):
+            return None
+
+    gr = _GnuradioStub()  # type: ignore[assignment]
 from logging_utils import resolve_log_path, setup_logging
 from path_utils import resolve_config_file, resolve_data_file
 
@@ -123,8 +171,195 @@ def _verify_dependencies(args: argparse.Namespace) -> None:
             "Install it with 'pip install audioread'."
         )
 
+    if np is None:
+        missing.append(
+            "Missing required Python package 'numpy'. Install it with 'pip install numpy'."
+        )
+
+    if OSMOSDR_IMPORT_ERROR is not None or osmosdr is None:
+        missing.append(
+            "Missing required Python package/module 'osmosdr'. Install gr-osmosdr "
+            "(e.g., 'sudo apt install gr-osmosdr' or 'pip install osmosdr')."
+        )
+
+    if GNURADIO_IMPORT_ERROR is not None or gr is None:
+        missing.append(
+            "Missing required Python package/module 'gnuradio'. Install it with "
+            "'sudo apt install gnuradio' or via conda/pip."
+        )
+
     if missing:
         raise SystemExit("\n".join(missing))
+
+
+def _module_available(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
+def _doctor_check_python() -> List[str]:
+    messages: List[str] = []
+    required = (3, 9)
+    current = sys.version_info[:3]
+    if current >= required:
+        messages.append(f"[OK] Python version {current[0]}.{current[1]}.{current[2]} (>= 3.9)")
+    else:
+        messages.append(
+            "[FAIL] Python version "
+            f"{current[0]}.{current[1]}.{current[2]} is below 3.9. "
+            "Install Python 3.9+."
+        )
+    return messages
+
+
+def _doctor_check_python_packages() -> List[str]:
+    messages: List[str] = []
+
+    if np is not None:
+        messages.append("[OK] numpy is available")
+    else:
+        messages.append("[FAIL] numpy is missing. Install with 'pip install numpy'.")
+
+    if OSMOSDR_IMPORT_ERROR is None and osmosdr is not None:
+        messages.append("[OK] osmosdr is available")
+    else:
+        messages.append(
+            "[FAIL] osmosdr is missing. Install gr-osmosdr (e.g., 'sudo apt install gr-osmosdr' "
+            "or 'pip install osmosdr')."
+        )
+
+    if GNURADIO_IMPORT_ERROR is None and gr is not None:
+        messages.append("[OK] gnuradio is available")
+    else:
+        messages.append(
+            "[FAIL] gnuradio is missing. Install with 'sudo apt install gnuradio' or via conda/pip."
+        )
+
+    if audioread is not None:
+        messages.append("[OK] audioread is available")
+    else:
+        mutagen_available = _module_available("mutagen")
+        if mutagen_available:
+            messages.append("[OK] mutagen is available")
+        else:
+            messages.append(
+                "[FAIL] audioread/mutagen is missing. Install with 'pip install audioread mutagen'."
+            )
+
+    return messages
+
+
+def _doctor_check_device_access(device: str) -> List[str]:
+    messages: List[str] = []
+    device = device.lower()
+    required_execs: List[str] = []
+    if device == "hackrf":
+        required_execs.append("hackrf_transfer")
+    elif device in {"pluto", "plutoplus", "pluto+", "plutoplussdr"}:
+        required_execs.append("iio_info")
+
+    for executable in required_execs:
+        if shutil.which(executable) is None:
+            messages.append(
+                f"[FAIL] Required executable '{executable}' is missing from PATH. "
+                f"Install the {device} utilities or ensure {executable} is accessible."
+            )
+        else:
+            messages.append(f"[OK] Found {executable} in PATH")
+
+    if device == "hackrf":
+        nodes = sorted(Path("/dev").glob("hackrf*"))
+        if not nodes:
+            messages.append(
+                "[FAIL] HackRF device node not found under /dev. Connect the device "
+                "and confirm udev rules are installed."
+            )
+        else:
+            inaccessible = [node for node in nodes if not os.access(node, os.R_OK | os.W_OK)]
+            if inaccessible:
+                messages.append(
+                    "[FAIL] HackRF device node(s) lack read/write access: "
+                    f"{', '.join(str(node) for node in inaccessible)}. "
+                    "Add udev rules or run with appropriate permissions."
+                )
+            else:
+                messages.append("[OK] HackRF device node(s) are readable/writable")
+    else:
+        nodes = sorted(Path("/dev").glob("iio:device*"))
+        if not nodes:
+            messages.append(
+                "[FAIL] Pluto/iio device nodes not found under /dev. Connect the device "
+                "or verify libiio/USB permissions."
+            )
+        else:
+            inaccessible = [node for node in nodes if not os.access(node, os.R_OK | os.W_OK)]
+            if inaccessible:
+                messages.append(
+                    "[FAIL] Pluto/iio device node(s) lack read/write access: "
+                    f"{', '.join(str(node) for node in inaccessible)}. "
+                    "Add udev rules or run with appropriate permissions."
+                )
+            else:
+                messages.append("[OK] Pluto/iio device node(s) are readable/writable")
+
+    return messages
+
+
+def _doctor_check_paths() -> List[str]:
+    messages: List[str] = []
+    config_path = resolve_config_file(APP_NAME, "transmitter_settings.json")
+    data_path = resolve_data_file(APP_NAME, "channel_presets.csv")
+
+    for label, path in (("Config", config_path), ("Data", data_path)):
+        parent = path.parent
+        if parent.exists():
+            writable = os.access(parent, os.W_OK | os.X_OK)
+            if writable:
+                messages.append(f"[OK] {label} directory is writable: {parent}")
+            else:
+                messages.append(
+                    f"[FAIL] {label} directory is not writable: {parent}. "
+                    "Update permissions or choose a writable location."
+                )
+        else:
+            ancestor = parent
+            while not ancestor.exists() and ancestor != ancestor.parent:
+                ancestor = ancestor.parent
+            if os.access(ancestor, os.W_OK | os.X_OK):
+                messages.append(
+                    f"[OK] {label} directory can be created: {parent} "
+                    f"(ancestor {ancestor} is writable)"
+                )
+            else:
+                messages.append(
+                    f"[FAIL] {label} directory cannot be created: {parent}. "
+                    "Ensure the parent directory is writable."
+                )
+
+    return messages
+
+
+def run_doctor(args: argparse.Namespace) -> int:
+    sections = [
+        ("Python", _doctor_check_python()),
+        ("Python packages", _doctor_check_python_packages()),
+        ("SDR device access", _doctor_check_device_access(args.device)),
+        ("Config/data access", _doctor_check_paths()),
+    ]
+
+    print("ATE doctor report")
+    print("=================")
+    exit_code = 0
+    for title, messages in sections:
+        print(f"\n{title}:")
+        for message in messages:
+            print(f"  {message}")
+            if message.startswith("[FAIL]"):
+                exit_code = 1
+    if exit_code != 0:
+        print("\nOne or more checks failed. Review the messages above for remediation hints.")
+    else:
+        print("\nAll checks passed.")
+    return exit_code
 
 
 class QueuedAudioSource(gr.sync_block):
@@ -1059,13 +1294,18 @@ def parse_args():
         description="Multi-channel NBFM transmitter for HackRF, Pluto, and PlutoPlus"
     )
     p.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run diagnostic checks for dependencies, devices, and configuration paths",
+    )
+    p.add_argument(
         "--device",
         type=str,
         default="hackrf",
         choices=["hackrf", "pluto", "plutoplus", "pluto+", "plutoplussdr"],
         help="SDR to use via osmosdr",
     )
-    p.add_argument("--fc", type=float, required=True, help="Center frequency (Hz)")
+    p.add_argument("--fc", type=float, help="Center frequency (Hz)")
     p.add_argument("--tx-sr", type=float, default=8e6, help="TX sample rate (Hz)")
     p.add_argument(
         "--tx-gain",
@@ -1084,7 +1324,6 @@ def parse_args():
     p.add_argument(
         "--files",
         nargs="+",
-        required=True,
         help=(
             "Channel file queues. Provide a space-separated entry per channel; "
             "use commas within an entry to queue multiple files (WAV or MP3) for that channel"
@@ -1200,6 +1439,14 @@ def parse_args():
 
     args = p.parse_args()
 
+    if args.doctor:
+        return args
+
+    if args.fc is None:
+        p.error("--fc is required unless --doctor is specified")
+    if not args.files:
+        p.error("--files is required unless --doctor is specified")
+
     try:
         args.file_groups = _parse_file_groups(args.files)
     except ValueError as exc:
@@ -1285,6 +1532,8 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.doctor:
+        raise SystemExit(run_doctor(args))
     log_path = resolve_log_path(APP_NAME, args.log_file, "multich_nbfm_tx.log")
     setup_logging("multich_nbfm_tx", log_file=log_path)
     _verify_dependencies(args)
