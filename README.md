@@ -87,3 +87,17 @@ Both scripts require GNU Radio with `osmosdr` support and NumPy available in
 your Python environment. MP3 playlists are supported via the optional
 [`audioread`](https://github.com/beetbox/audioread) dependency; install it with
 `pip install audioread` if you want to mix MP3 tracks alongside WAV files.
+
+#### WSL + virtualenv note (osmosdr import errors)
+
+If `hackrf_info` works but `import osmosdr` fails inside a virtualenv on WSL,
+the virtual environment is likely hiding the system GNU Radio site packages.
+Recreate the venv with system site packages enabled so it can see the
+`gr-osmosdr` Python bindings:
+
+```bash
+deactivate
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python3 -c "import osmosdr; print(osmosdr.__file__)"
+```
